@@ -970,7 +970,7 @@ sync
 # - Insert the USB drive
 # - Enter BIOS/boot menu (usually F2, F12, DEL, or ESC at startup)
 # - Select the USB drive as boot device
-# - AstraOS will boot into the installer wizard
+# - AstraOS will boot into the desktop
 ```
 
 **Hardware requirements:**
@@ -981,6 +981,199 @@ sync
 - PS/2 keyboard and mouse (or USB with BIOS PS/2 emulation, which most BIOSes provide)
 
 **Tested environments:** QEMU, VirtualBox, VMware Workstation, Bochs, and bare-metal Lenovo ThinkPad / Dell OptiPlex / HP ProDesk systems.
+
+---
+
+### Live USB Boot Guide
+
+AstraOS runs entirely from RAM — no installation to disk required. Just write the ISO to a USB drive, boot from it, and you're running AstraOS live. Nothing on the host machine's hard drive is touched.
+
+#### Creating a Live USB
+
+##### Linux
+
+```bash
+# Find your USB device
+lsblk
+
+# Write the ISO (replace /dev/sdX — be VERY careful to pick the right device!)
+sudo dd if=build/astraos.iso of=/dev/sdX bs=4M conv=fsync status=progress
+
+# Alternative: use 'pv' for a progress bar
+sudo pv build/astraos.iso | sudo dd of=/dev/sdX bs=4M conv=fsync
+```
+
+##### macOS
+
+```bash
+# List disks to find your USB
+diskutil list
+
+# Unmount the USB drive (replace diskN)
+diskutil unmountDisk /dev/diskN
+
+# Write the ISO (use rdiskN for raw device — much faster)
+sudo dd if=build/astraos.iso of=/dev/rdiskN bs=4m
+sync
+
+# Eject when done
+diskutil eject /dev/diskN
+```
+
+##### Windows
+
+**Option A: Rufus (recommended)**
+1. Download [Rufus](https://rufus.ie/) (portable, no install needed)
+2. Select your USB drive
+3. Click "SELECT" and choose `build/astraos.iso`
+4. Partition scheme: **MBR**
+5. Target system: **BIOS (or UEFI-CSM)**
+6. File system: leave default
+7. Click **START** → select "Write in DD Image mode" if prompted
+
+**Option B: dd via WSL2**
+```bash
+# From WSL2, the USB usually appears as /dev/sdX
+# Check with: ls /dev/sd*
+sudo dd if=build/astraos.iso of=/dev/sdX bs=4M status=progress
+```
+
+**Option C: Win32 Disk Imager**
+1. Download [Win32 Disk Imager](https://win32diskimager.org/)
+2. Select the `.iso` file (change filter to `*.*` to see it)
+3. Select your USB drive letter
+4. Click **Write**
+
+**Option D: PowerShell (native, no extra tools)**
+```powershell
+# List disks to find your USB number
+Get-Disk | Format-Table Number, FriendlyName, Size
+
+# Clear the USB (replace N with your disk number)
+Clear-Disk -Number N -RemoveData -Confirm:$false
+# Write the image
+$iso = "C:\path\to\build\astraos.iso"
+$disk = "\\.\PhysicalDriveN"
+$src = [System.IO.File]::OpenRead($iso)
+$dst = [System.IO.File]::OpenWrite($disk)
+$src.CopyTo($dst)
+$src.Close(); $dst.Close()
+```
+
+##### ChromeOS (Chromebook)
+
+```bash
+# Enable Linux (Crostini) in Settings → Developers → Linux development environment
+# Then from the Linux terminal:
+# Copy ISO from Files app to Linux home, or build from source
+
+# Find USB device
+lsblk
+
+# Write (ChromeOS may mount USB as /dev/sdX)
+sudo dd if=astraos.iso of=/dev/sdX bs=4M status=progress
+sync
+```
+
+> **Note:** You'll need to boot from USB via the firmware. On most Chromebooks, press `Ctrl+L` at the developer mode screen (requires developer mode enabled).
+
+#### BIOS / Firmware Setup
+
+| Manufacturer | Boot Menu Key | BIOS Setup Key |
+|-------------|---------------|----------------|
+| **Lenovo** | F12 | F1 or F2 |
+| **Dell** | F12 | F2 |
+| **HP** | F9 | F10 |
+| **ASUS** | F8 or ESC | F2 or DEL |
+| **Acer** | F12 | F2 |
+| **MSI** | F11 | DEL |
+| **Gigabyte** | F12 | DEL |
+| **Intel NUC** | F10 | F2 |
+| **Apple Mac** | Hold Option (⌥) | N/A |
+| **Generic** | F12 / ESC | F2 / DEL |
+
+**If your machine only supports UEFI:**
+1. Enter BIOS setup
+2. Find **CSM** (Compatibility Support Module) or **Legacy Boot**
+3. Enable it — this allows BIOS-mode booting
+4. Save and reboot, then use the boot menu to select your USB
+5. If no CSM option exists, the machine cannot boot AstraOS (rare on desktops, common on tablets/Surface devices)
+
+#### Virtual Machine Live Boot
+
+You don't need a USB drive to test — you can live-boot the ISO directly in any VM:
+
+```bash
+# QEMU (fastest for development)
+qemu-system-i386 -cdrom build/astraos.iso -m 256M -vga std -boot d
+
+# With KVM acceleration (Linux host, much faster)
+qemu-system-i386 -cdrom build/astraos.iso -m 256M -vga std -boot d -enable-kvm
+
+# With audio support
+qemu-system-i386 -cdrom build/astraos.iso -m 256M -vga std -boot d \
+    -device AC97 -audiodev pa,id=snd0
+```
+
+**VirtualBox:**
+1. New VM → Type: **Other**, Version: **Other/Unknown**
+2. Memory: 256 MB+
+3. Skip hard disk creation (live boot doesn't need one)
+4. Settings → Storage → Controller: IDE → Add Optical Drive → select `astraos.iso`
+5. Settings → System → Enable **I/O APIC**
+6. Settings → Display → Video Memory: **64 MB**, Graphics Controller: **VBoxVGA**
+7. Start
+
+**VMware Workstation / Player:**
+1. New VM → Installer disc image → select `astraos.iso`
+2. Guest OS: **Other → Other**
+3. Memory: 256 MB
+4. Finish → Power On
+5. If display is blank, try: VM → Settings → Display → Accelerate 3D graphics: **OFF**
+
+**Hyper-V (Windows Pro/Enterprise):**
+1. New VM → Generation: **Generation 1** (BIOS boot)
+2. Memory: 256 MB
+3. Skip networking (AstraOS has no network stack yet)
+4. Connect existing virtual hard disk: skip
+5. Install OS from boot CD: select `astraos.iso`
+6. Start
+
+**Parallels (macOS):**
+1. New VM → Install from image → select `astraos.iso`
+2. OS type: **Other → Other**
+3. Hardware → Memory: 256 MB
+4. Boot order: CD/DVD first
+5. Start
+
+#### What to Expect
+
+When AstraOS boots (USB or VM), you'll see:
+
+1. **GRUB bootloader** — automatically selects AstraOS after 3 seconds
+2. **Kernel initialization** — memory manager, interrupt handlers, drivers (1-2 seconds)
+3. **Desktop** — the glassmorphism desktop appears with:
+   - Procedural wallpaper (gradient by default, changeable in Settings)
+   - VS Code-like code editor with syntax highlighting
+   - Terminal emulator with AstraOS shell
+   - File manager with VFS browser
+   - Settings app for theme/wallpaper selection
+   - Glass-effect taskbar with clock
+
+AstraOS runs entirely in RAM. When you power off, nothing is saved — it's a clean environment every boot. This makes it perfect for demos, testing, and experimentation.
+
+#### Troubleshooting Live Boot
+
+| Problem | Solution |
+|---------|----------|
+| USB not showing in boot menu | Try a different USB port (use USB 2.0 ports if available); ensure USB boot is enabled in BIOS |
+| "No bootable device" from USB | Rewrite the ISO with `dd` (not `cp`); ensure you wrote to the raw device (`/dev/sdX`) not a partition (`/dev/sdX1`) |
+| Screen stays black after GRUB | Wait 5-8 seconds; some VGA/VESA init takes time. If nothing happens, try a different `vga=` mode in GRUB |
+| Keyboard/mouse don't work | Enable "USB Legacy Support" or "PS/2 Emulation" in BIOS settings |
+| Works in VM but not bare metal | Check BIOS for CSM/Legacy mode; ensure Secure Boot is **disabled** |
+| Display is garbled/wrong resolution | AstraOS uses VESA mode 0x118 (1024x768x32). If your display doesn't support it, try booting with `vga=0x115` (800x600) in GRUB |
+| USB drive won't boot on Mac | Hold Option (⌥) at startup; select "EFI Boot" or the USB icon. If not visible, the Mac may not support BIOS boot — use VirtualBox instead |
+| Rufus: "unsupported ISO" | Select "Write in DD Image mode" when prompted — this writes the raw image correctly |
 
 ---
 
