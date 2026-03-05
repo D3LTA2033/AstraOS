@@ -392,9 +392,10 @@ void kernel_main(uint32_t magic, uint32_t mboot_addr)
         vga_write("[OK] GUI window manager initialized\n");
 
         /* Create default applications */
-        app_editor_create(40, 40, 580, 500, "main.ac");
-        app_terminal_create(50, 300, 500, 350);
-        app_filemgr_create(640, 40, 340, 500);
+        app_editor_create(40, 40, 620, 520, "main.ac");
+        app_terminal_create(50, 320, 520, 350);
+        app_filemgr_create(670, 40, 320, 400);
+        app_settings_create(670, 460, 320, 280);
         vga_write("[OK] Desktop applications launched\n");
 
         vga_set_color(vga_entry_color(VGA_COLOR_YELLOW, VGA_COLOR_BLACK));

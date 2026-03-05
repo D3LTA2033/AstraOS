@@ -24,7 +24,7 @@
 #define GUI_MAX_WINDOWS 16
 
 /* Title bar height */
-#define TITLEBAR_H      28
+#define TITLEBAR_H      32
 #define TASKBAR_H       36
 #define BORDER_W        1
 

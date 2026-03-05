@@ -68,6 +68,7 @@ C_SRCS     := $(KERNEL_DIR)/core/kernel.c \
               $(KERNEL_DIR)/core/initramfs.c \
               $(KERNEL_DIR)/core/signal.c \
               $(KERNEL_DIR)/core/installer.c \
+              $(KERNEL_DIR)/core/theme.c \
               $(KERNEL_DIR)/core/gui.c \
               $(KERNEL_DIR)/core/astracor.c \
               $(KERNEL_DIR)/core/apps.c \

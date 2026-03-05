@@ -1,11 +1,13 @@
 /* ==========================================================================
  * AstraOS - GUI Window Manager Implementation
  * ==========================================================================
- * Compositing WM with Catppuccin-inspired dark theme. Draws desktop,
- * taskbar, windows with title bars, and an animated mouse cursor.
+ * Compositing WM with Hyprland-inspired glassmorphism aesthetic.
+ * Catppuccin Mocha palette, alpha-blended glass surfaces, rounded
+ * corners, gradient desktop, and macOS-style window control dots.
  * ========================================================================== */
 
 #include <kernel/gui.h>
+#include <kernel/theme.h>
 #include <drivers/framebuffer.h>
 #include <drivers/mouse.h>
 #include <drivers/keyboard.h>
@@ -38,23 +40,36 @@ static gui_window_t *find_window(int id)
 
 static void draw_cursor(int x, int y)
 {
-    /* Simple arrow cursor */
-    static const uint8_t cursor[12][8] = {
-        {1,0,0,0,0,0,0,0},
-        {1,1,0,0,0,0,0,0},
-        {1,2,1,0,0,0,0,0},
-        {1,2,2,1,0,0,0,0},
-        {1,2,2,2,1,0,0,0},
-        {1,2,2,2,2,1,0,0},
-        {1,2,2,2,2,2,1,0},
-        {1,2,2,2,1,1,0,0},
-        {1,2,1,2,2,1,0,0},
-        {1,1,0,1,2,1,0,0},
-        {0,0,0,0,1,2,1,0},
-        {0,0,0,0,1,1,0,0},
+    /* Arrow cursor bitmap: 0=transparent, 1=outline, 2=fill */
+    static const uint8_t cursor[16][10] = {
+        {1,0,0,0,0,0,0,0,0,0},
+        {1,1,0,0,0,0,0,0,0,0},
+        {1,2,1,0,0,0,0,0,0,0},
+        {1,2,2,1,0,0,0,0,0,0},
+        {1,2,2,2,1,0,0,0,0,0},
+        {1,2,2,2,2,1,0,0,0,0},
+        {1,2,2,2,2,2,1,0,0,0},
+        {1,2,2,2,2,2,2,1,0,0},
+        {1,2,2,2,2,2,2,2,1,0},
+        {1,2,2,2,2,2,1,1,1,0},
+        {1,2,2,1,2,2,1,0,0,0},
+        {1,2,1,0,1,2,2,1,0,0},
+        {1,1,0,0,1,2,2,1,0,0},
+        {0,0,0,0,0,1,2,1,0,0},
+        {0,0,0,0,0,1,2,1,0,0},
+        {0,0,0,0,0,0,1,0,0,0},
     };
-    for (int r = 0; r < 12; r++)
-        for (int c = 0; c < 8; c++) {
+
+    /* Subtle drop shadow behind cursor */
+    for (int r = 0; r < 16; r++)
+        for (int c = 0; c < 10; c++) {
+            if (cursor[r][c] != 0)
+                fb_blend_pixel(x + c + 2, y + r + 2, RGBA(0,0,0,60));
+        }
+
+    /* Draw cursor */
+    for (int r = 0; r < 16; r++)
+        for (int c = 0; c < 10; c++) {
             if (cursor[r][c] == 1)
                 fb_putpixel(x + c, y + r, COL_BLACK);
             else if (cursor[r][c] == 2)
@@ -65,108 +80,135 @@ static void draw_cursor(int x, int y)
 static void draw_taskbar(void)
 {
     const fb_info_t *fb = fb_get_info();
+    int tw = (int)fb->width;
     int ty = (int)fb->height - TASKBAR_H;
 
-    /* Taskbar background */
-    fb_fill_rect(0, ty, (int)fb->width, TASKBAR_H, COL_BG_MED);
-    fb_hline(0, ty, (int)fb->width, COL_BORDER);
+    const astra_theme_t *t = theme_current();
 
-    /* "AstraOS" logo button */
-    fb_fill_rect(4, ty + 4, 80, TASKBAR_H - 8, COL_ACCENT);
-    fb_puts(12, ty + 10, "AstraOS", COL_BG_DARK, COL_ACCENT);
+    /* Glass taskbar background */
+    fb_fill_rect_alpha(0, ty, tw, TASKBAR_H,
+                      RGBA(COL_R(t->taskbar), COL_G(t->taskbar), COL_B(t->taskbar), t->taskbar_alpha));
+    /* Top highlight line for subtle glass edge */
+    fb_fill_rect_alpha(0, ty, tw, 1,
+                      RGBA(COL_R(t->accent), COL_G(t->accent), COL_B(t->accent), 40));
+
+    /* "AstraOS" logo pill */
+    fb_fill_rounded_rect(6, ty + 5, 84, TASKBAR_H - 10, 6,
+                        RGBA(COL_R(t->accent), COL_G(t->accent), COL_B(t->accent), 50));
+    fb_puts_transparent(16, ty + 10, "AstraOS", t->accent);
 
     /* Window buttons on taskbar */
-    int bx = 92;
-    for (int i = 0; i < focus_count && bx < (int)fb->width - 120; i++) {
+    int bx = 100;
+    for (int i = 0; i < focus_count && bx < tw - 140; i++) {
         gui_window_t *w = find_window(focus_order[i]);
         if (!w) continue;
 
-        color_t bg = (w->flags & WIN_FOCUSED) ? COL_SURFACE : COL_BG_DARK;
-        color_t fg = (w->flags & WIN_FOCUSED) ? COL_ACCENT : COL_TEXT_DIM;
-        int bw = fb_text_width(w->title) + 16;
-        if (bw < 60) bw = 60;
+        bool focused = (w->flags & WIN_FOCUSED) != 0;
+        int bw = fb_text_width(w->title) + 20;
+        if (bw < 64) bw = 64;
         if (bw > 160) bw = 160;
 
-        fb_fill_rect(bx, ty + 4, bw, TASKBAR_H - 8, bg);
-        fb_puts(bx + 8, ty + 10, w->title, fg, bg);
-        bx += bw + 4;
+        /* Rounded pill button for each window */
+        color_t btn_bg = focused
+            ? RGBA(COL_R(t->accent), COL_G(t->accent), COL_B(t->accent), 60)
+            : RGBA(COL_R(t->surface), COL_G(t->surface), COL_B(t->surface), 120);
+        fb_fill_rounded_rect(bx, ty + 5, bw, TASKBAR_H - 10, 6, btn_bg);
+
+        /* Active indicator dot */
+        if (focused)
+            fb_fill_circle(bx + bw / 2, ty + TASKBAR_H - 4, 2, t->accent);
+
+        color_t fg = focused ? t->text : t->text_dim;
+        fb_puts_transparent(bx + 10, ty + 10, w->title, fg);
+        bx += bw + 6;
     }
 
-    /* Clock on right */
-    rtc_time_t t;
-    rtc_read(&t);
+    /* Clock on right - centered vertically */
+    rtc_time_t rtc;
+    rtc_read(&rtc);
     char clock[9];
-    clock[0] = '0' + (char)(t.hour / 10);
-    clock[1] = '0' + (char)(t.hour % 10);
+    clock[0] = '0' + (char)(rtc.hour / 10);
+    clock[1] = '0' + (char)(rtc.hour % 10);
     clock[2] = ':';
-    clock[3] = '0' + (char)(t.minute / 10);
-    clock[4] = '0' + (char)(t.minute % 10);
+    clock[3] = '0' + (char)(rtc.minute / 10);
+    clock[4] = '0' + (char)(rtc.minute % 10);
     clock[5] = ':';
-    clock[6] = '0' + (char)(t.second / 10);
-    clock[7] = '0' + (char)(t.second % 10);
+    clock[6] = '0' + (char)(rtc.second / 10);
+    clock[7] = '0' + (char)(rtc.second % 10);
     clock[8] = '\0';
-    fb_puts((int)fb->width - 80, ty + 10, clock, COL_TEXT, COL_BG_MED);
+    int cw = fb_text_width(clock);
+    fb_puts_transparent(tw - cw - 16, ty + 10, clock, t->text);
 }
 
 static void draw_desktop(void)
 {
     const fb_info_t *info = fb_get_info();
+    int sw = (int)info->width;
+    int sh = (int)info->height;
 
-    /* Gradient-ish dark background */
-    fb_clear(COL_BG_DARK);
+    /* Draw wallpaper from theme engine */
+    theme_draw_wallpaper(sw, sh);
 
-    /* Subtle branding */
-    const char *brand = "AstraOS 1.0";
-    int bw = fb_text_width(brand);
-    fb_puts_transparent((int)(info->width - (uint32_t)bw) / 2,
-                       (int)(info->height - TASKBAR_H) / 2 - 40,
-                       brand, COL_BG_LIGHT);
-
+    /* Subtle subtitle */
     const char *sub = "Programming Environment";
-    int sw = fb_text_width(sub);
-    fb_puts_transparent((int)(info->width - (uint32_t)sw) / 2,
-                       (int)(info->height - TASKBAR_H) / 2 - 16,
-                       sub, COL_BG_LIGHT);
+    int subw = fb_text_width(sub);
+    const astra_theme_t *t = theme_current();
+    fb_puts_transparent((sw - subw) / 2, sh / 2 - 16, sub,
+                       RGBA(COL_R(t->text), COL_G(t->text), COL_B(t->text), 35));
 }
 
 static void draw_window(gui_window_t *w)
 {
+    const astra_theme_t *t = theme_current();
     bool focused = (w->flags & WIN_FOCUSED) != 0;
-    color_t border = focused ? COL_ACCENT : COL_BORDER;
+    int r = 10; /* corner radius */
 
-    /* Window shadow */
-    fb_fill_rect(w->x + 3, w->y + 3, w->w, w->h, RGB(10,10,20));
+    /* Multi-layer shadow for depth */
+    for (int i = 4; i > 0; i--) {
+        uint32_t sa = (uint32_t)(focused ? 40 : 20) / (uint32_t)i;
+        fb_fill_rect_alpha(w->x + i * 2, w->y + i * 2, w->w, w->h,
+                          RGBA(0, 0, 0, sa));
+    }
 
-    /* Window body */
-    fb_fill_rect(w->x, w->y, w->w, w->h, COL_BG_DARK);
-    fb_rect(w->x, w->y, w->w, w->h, border);
+    /* Glass body - semi-transparent rounded rect */
+    uint32_t body_a = focused ? (uint32_t)t->window_alpha : (uint32_t)t->window_alpha - 40;
+    color_t body_bg = RGBA(COL_R(t->bg), COL_G(t->bg), COL_B(t->bg), body_a);
+    fb_fill_rounded_rect(w->x, w->y, w->w, w->h, r, body_bg);
+
+    /* Glowing border */
+    color_t border = focused
+        ? RGBA(COL_R(t->accent), COL_G(t->accent), COL_B(t->accent), 120)
+        : RGBA(COL_R(t->border), COL_G(t->border), COL_B(t->border), 80);
+    fb_rounded_rect(w->x, w->y, w->w, w->h, r, border);
 
     if (w->flags & WIN_TITLEBAR) {
-        /* Title bar */
-        color_t tb_bg = focused ? COL_SURFACE : COL_BG_MED;
-        fb_fill_rect(w->x + 1, w->y + 1, w->w - 2, TITLEBAR_H - 1, tb_bg);
-        fb_hline(w->x, w->y + TITLEBAR_H, w->w, border);
+        /* Title bar - slightly more opaque with glass surface */
+        fb_fill_rect_alpha(w->x + 1, w->y + 1, w->w - 2, TITLEBAR_H - 1,
+                          RGBA(COL_R(t->titlebar), COL_G(t->titlebar),
+                               COL_B(t->titlebar), t->titlebar_alpha));
+        /* Separator line */
+        fb_fill_rect_alpha(w->x + 1, w->y + TITLEBAR_H, w->w - 2, 1,
+                          RGBA(COL_R(t->border), COL_G(t->border), COL_B(t->border), 80));
 
-        /* Title text */
-        fb_puts(w->x + 10, w->y + 6, w->title,
-                focused ? COL_TEXT : COL_TEXT_DIM, tb_bg);
+        /* Window control dots (macOS-style) */
+        int dot_y = w->y + TITLEBAR_H / 2;
+        fb_fill_circle(w->x + 16, dot_y, 6, t->red);
+        fb_fill_circle(w->x + 34, dot_y, 6, t->yellow);
+        fb_fill_circle(w->x + 52, dot_y, 6, t->green);
 
-        /* Close button */
-        if (w->flags & WIN_CLOSABLE) {
-            int cbx = w->x + w->w - 24;
-            int cby = w->y + 4;
-            fb_fill_rect(cbx, cby, 20, 20, COL_RED);
-            fb_puts(cbx + 6, cby + 2, "x", COL_WHITE, COL_RED);
-        }
+        /* Title text - centered */
+        int ttw = fb_text_width(w->title);
+        int tx = w->x + (w->w - ttw) / 2;
+        fb_puts_transparent(tx, w->y + 8,
+                          w->title, focused ? t->text : t->text_dim);
     }
 
     /* Render content */
     if (w->on_render) {
-        int cx, cy, cw, ch;
-        cx = w->x + BORDER_W;
-        cy = w->y + (w->flags & WIN_TITLEBAR ? TITLEBAR_H + 1 : BORDER_W);
-        cw = w->w - 2 * BORDER_W;
-        ch = w->h - (w->flags & WIN_TITLEBAR ? TITLEBAR_H + BORDER_W + 1 : 2 * BORDER_W);
+        int cx = w->x + BORDER_W;
+        int cy = w->y + (w->flags & WIN_TITLEBAR ? TITLEBAR_H + 1 : BORDER_W);
+        int cw = w->w - 2 * BORDER_W;
+        int ch = w->h - (w->flags & WIN_TITLEBAR ? TITLEBAR_H + BORDER_W + 1 : 2 * BORDER_W);
         w->on_render(w->id, cx, cy, cw, ch);
     }
 }
@@ -219,12 +261,11 @@ static void handle_mouse(void)
         if (wid >= 0) {
             gui_window_t *w = find_window(wid);
             if (w) {
-                /* Check close button */
-                if (w->flags & WIN_CLOSABLE) {
-                    int cbx = w->x + w->w - 24;
-                    int cby = w->y + 4;
-                    if (ms.x >= cbx && ms.x < cbx + 20 &&
-                        ms.y >= cby && ms.y < cby + 20) {
+                /* Check close dot (centered at w->x+16, w->y+TITLEBAR_H/2, r=6) */
+                if ((w->flags & WIN_CLOSABLE) && (w->flags & WIN_TITLEBAR)) {
+                    int dx = ms.x - (w->x + 16);
+                    int dy = ms.y - (w->y + TITLEBAR_H / 2);
+                    if (dx * dx + dy * dy <= 8 * 8) {
                         gui_close_window(wid);
                         return;
                     }
@@ -285,6 +326,7 @@ static void handle_keyboard(void)
 
 void gui_init(void)
 {
+    theme_init();
     kmemset(windows, 0, sizeof(windows));
     focus_count = 0;
     gui_active = true;

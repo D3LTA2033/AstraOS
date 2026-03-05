@@ -37,6 +37,19 @@ typedef uint32_t color_t;
 #define COL_OVERLAY     RGB(108,112,134)
 #define COL_BORDER      RGB(88,91,112)
 
+/* Extract ARGB components */
+#define COL_A(c) (((c) >> 24) & 0xFF)
+#define COL_R(c) (((c) >> 16) & 0xFF)
+#define COL_G(c) (((c) >>  8) & 0xFF)
+#define COL_B(c) ((c) & 0xFF)
+
+/* Semi-transparent colors for Hyprland glass effect */
+#define COL_GLASS_BG       RGBA(30,30,46,180)
+#define COL_GLASS_SURFACE  RGBA(49,50,68,200)
+#define COL_GLASS_BORDER   RGBA(137,180,250,100)
+#define COL_GLASS_SHADOW   RGBA(0,0,0,120)
+#define COL_GLASS_TITLEBAR RGBA(30,30,46,220)
+
 /* Framebuffer info */
 typedef struct {
     uint32_t *addr;     /* Linear framebuffer address */
@@ -95,5 +108,35 @@ void fb_scroll_region(int x, int y, int w, int h, int n, color_t fill);
 /* Double buffering */
 void fb_swap(void);     /* Copy back buffer to screen */
 void fb_set_double_buffered(bool enable);
+
+/* Fast 32-bit memset fill */
+void fb_memset32(uint32_t *dst, uint32_t val, uint32_t count);
+
+/* Alpha blend a pixel onto background */
+void fb_blend_pixel(int x, int y, color_t color);
+
+/* Filled rectangle with alpha blending */
+void fb_fill_rect_alpha(int x, int y, int w, int h, color_t color);
+
+/* Rounded rectangle (filled, with corner radius) */
+void fb_fill_rounded_rect(int x, int y, int w, int h, int radius, color_t color);
+
+/* Rounded rectangle outline */
+void fb_rounded_rect(int x, int y, int w, int h, int radius, color_t color);
+
+/* Horizontal gradient fill */
+void fb_gradient_h(int x, int y, int w, int h, color_t left, color_t right);
+
+/* Vertical gradient fill */
+void fb_gradient_v(int x, int y, int w, int h, color_t top, color_t bottom);
+
+/* Draw a filled circle */
+void fb_fill_circle(int cx, int cy, int r, color_t color);
+
+/* Draw character with alpha-blended background */
+void fb_putchar_alpha(int x, int y, char c, color_t fg, color_t bg_color);
+
+/* Draw string with alpha-blended background */
+void fb_puts_alpha(int x, int y, const char *s, color_t fg, color_t bg_color);
 
 #endif /* _ASTRA_DRIVERS_FRAMEBUFFER_H */
