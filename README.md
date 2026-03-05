@@ -470,63 +470,572 @@ void fb_puts_alpha(int x, int y, const char *s, color_t fg, color_t bg);
 
 ---
 
-## Building
+## Installation Guide
+
+AstraOS requires a freestanding cross-compiler toolchain, an assembler, ISO generation tools, and an emulator for testing. Below are complete setup instructions for every major platform.
 
 ### Prerequisites
 
-| Tool | Purpose |
-|------|---------|
-| `i686-elf-gcc` | Cross-compiler (C11, freestanding) |
-| `i686-elf-ld` | Linker |
-| `nasm` | Assembler (elf32) |
-| `grub-mkrescue` + `xorriso` | ISO generation |
-| `qemu-system-i386` | Testing |
+| Tool | Version | Purpose |
+|------|---------|---------|
+| `i686-elf-gcc` | 13.2.0+ | Cross-compiler (C11, freestanding, no libc) |
+| `i686-elf-ld` | 2.41+ | Linker with custom linker script support |
+| `i686-elf-objcopy` | 2.41+ | Binary extraction from ELF for user programs |
+| `nasm` | 2.15+ | Assembler for boot stubs (elf32 format) |
+| `grub-mkrescue` | 2.06+ | Bootable ISO 9660 image generation |
+| `xorriso` | 1.5+ | Backend for grub-mkrescue ISO creation |
+| `qemu-system-i386` | 7.0+ | Hardware emulation for development and testing |
+| `make` | 4.0+ | Build system |
+| `git` | 2.0+ | Source control |
 
-### Building the Cross-Compiler
+---
+
+### Ubuntu / Debian / Pop!_OS / Linux Mint
 
 ```bash
+# 1. Install system dependencies
+sudo apt update
+sudo apt install -y build-essential bison flex libgmp-dev libmpc-dev \
+    libmpfr-dev texinfo nasm xorriso grub-pc-bin grub-common mtools \
+    qemu-system-x86 git curl
+
+# 2. Build the cross-compiler
 export PREFIX="/opt/cross"
 export TARGET="i686-elf"
 export PATH="$PREFIX/bin:$PATH"
+sudo mkdir -p $PREFIX
 
-# binutils
-tar xf binutils-2.41.tar.xz && cd binutils-2.41
-./configure --target=$TARGET --prefix=$PREFIX --with-sysroot --disable-nls --disable-werror
-make -j$(nproc) && make install && cd ..
+# Download sources
+mkdir -p /tmp/cross-build && cd /tmp/cross-build
+curl -LO https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+curl -LO https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
 
-# GCC (C only)
-tar xf gcc-13.2.0.tar.xz && cd gcc-13.2.0
-./configure --target=$TARGET --prefix=$PREFIX --disable-nls --enable-languages=c --without-headers
+# Build binutils
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+    --with-sysroot --disable-nls --disable-werror
+make -j$(nproc)
+sudo make install
+cd ..
+
+# Build GCC
+tar xf gcc-13.2.0.tar.xz
+mkdir build-gcc && cd build-gcc
+../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+    --disable-nls --enable-languages=c --without-headers
 make -j$(nproc) all-gcc all-target-libgcc
-make install-gcc install-target-libgcc
+sudo make install-gcc install-target-libgcc
+cd /tmp && rm -rf cross-build
+
+# 3. Add to PATH (add to ~/.bashrc for persistence)
+echo 'export PATH="/opt/cross/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 4. Clone and build AstraOS
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make iso
+
+# 5. Run
+make run
 ```
 
-### Build Commands
+### Fedora / RHEL / CentOS / Rocky Linux / AlmaLinux
+
+```bash
+# 1. Install system dependencies
+sudo dnf groupinstall -y "Development Tools"
+sudo dnf install -y gmp-devel mpfr-devel libmpc-devel texinfo \
+    nasm xorriso grub2-tools-extra mtools qemu-system-x86 git curl
+
+# 2. Build the cross-compiler (same as Ubuntu)
+export PREFIX="/opt/cross"
+export TARGET="i686-elf"
+export PATH="$PREFIX/bin:$PATH"
+sudo mkdir -p $PREFIX
+
+mkdir -p /tmp/cross-build && cd /tmp/cross-build
+curl -LO https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+curl -LO https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
+
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+    --with-sysroot --disable-nls --disable-werror
+make -j$(nproc) && sudo make install && cd ..
+
+tar xf gcc-13.2.0.tar.xz
+mkdir build-gcc && cd build-gcc
+../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+    --disable-nls --enable-languages=c --without-headers
+make -j$(nproc) all-gcc all-target-libgcc
+sudo make install-gcc install-target-libgcc
+cd /tmp && rm -rf cross-build
+
+# 3. Add to PATH
+echo 'export PATH="/opt/cross/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 4. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make run
+```
+
+### Arch Linux / Manjaro / EndeavourOS
+
+```bash
+# 1. Install dependencies (Arch has cross-compiler packages in AUR)
+sudo pacman -S --needed base-devel nasm xorriso grub mtools \
+    qemu-system-x86 git curl gmp libmpc mpfr
+
+# Option A: Use AUR packages (easier)
+# If you have an AUR helper like yay or paru:
+yay -S i686-elf-binutils i686-elf-gcc
+
+# Option B: Build from source (same as Ubuntu step 2)
+export PREFIX="/opt/cross"
+export TARGET="i686-elf"
+export PATH="$PREFIX/bin:$PATH"
+sudo mkdir -p $PREFIX
+
+mkdir -p /tmp/cross-build && cd /tmp/cross-build
+curl -LO https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+curl -LO https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
+
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+    --with-sysroot --disable-nls --disable-werror
+make -j$(nproc) && sudo make install && cd ..
+
+tar xf gcc-13.2.0.tar.xz
+mkdir build-gcc && cd build-gcc
+../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+    --disable-nls --enable-languages=c --without-headers
+make -j$(nproc) all-gcc all-target-libgcc
+sudo make install-gcc install-target-libgcc
+cd /tmp && rm -rf cross-build
+
+# 2. Add to PATH
+echo 'export PATH="/opt/cross/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+
+# 3. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make run
+```
+
+### openSUSE (Tumbleweed / Leap)
+
+```bash
+# 1. Install dependencies
+sudo zypper install -y -t pattern devel_C_C++
+sudo zypper install -y nasm xorriso grub2 mtools qemu-x86 git curl \
+    gmp-devel mpfr-devel mpc-devel texinfo
+
+# 2. Build cross-compiler (same steps as Ubuntu step 2)
+# ... (see Ubuntu section for the full binutils + GCC build)
+
+# 3. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/opt/cross/bin:$PATH"
+make run
+```
+
+### Void Linux
+
+```bash
+# 1. Install dependencies
+sudo xbps-install -Su
+sudo xbps-install -y base-devel nasm xorriso grub mtools \
+    qemu git curl gmp-devel mpfr-devel libmpc-devel texinfo
+
+# 2. Build cross-compiler (same steps as Ubuntu step 2)
+# ... (see Ubuntu section for the full binutils + GCC build)
+
+# 3. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/opt/cross/bin:$PATH"
+make run
+```
+
+### Gentoo
+
+```bash
+# 1. Install dependencies
+sudo emerge --ask sys-devel/crossdev dev-lang/nasm dev-libs/libisoburn \
+    sys-boot/grub sys-fs/mtools app-emulation/qemu dev-vcs/git
+
+# 2. Use crossdev to build the cross-compiler (Gentoo way)
+sudo crossdev --target i686-elf --stable --gcc 13.2.0 --binutils 2.41
+
+# Or build manually (see Ubuntu section for the full steps)
+
+# 3. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/opt/cross/bin:$PATH"  # or /usr/i686-elf/bin if using crossdev
+make run
+```
+
+### NixOS / Nix
+
+```bash
+# 1. Using a nix-shell with all dependencies
+# Create shell.nix in the project root or use this one-liner:
+nix-shell -p gnumake nasm xorriso grub2 mtools qemu git \
+    pkgsCross.i686-embedded.buildPackages.gcc \
+    pkgsCross.i686-embedded.buildPackages.binutils
+
+# 2. Inside the nix-shell:
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make run
+
+# Alternative: build cross-compiler manually (see Ubuntu section)
+```
+
+### Alpine Linux
+
+```bash
+# 1. Install dependencies
+sudo apk add build-base gmp-dev mpfr-dev mpc1-dev texinfo \
+    nasm xorriso grub grub-bios mtools qemu-system-i386 git curl bash
+
+# 2. Build cross-compiler (same steps as Ubuntu step 2)
+# NOTE: Alpine uses musl libc — the cross-compiler builds fine,
+# it just compiles for bare-metal i686-elf anyway.
+
+# 3. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/opt/cross/bin:$PATH"
+make run
+```
+
+---
+
+### macOS (Intel & Apple Silicon)
+
+```bash
+# 1. Install Homebrew (if not already installed)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 2. Install dependencies
+brew install nasm xorriso qemu git gmp mpfr libmpc mtools
+
+# 3. Install GRUB for i386 target
+# macOS doesn't package grub-mkrescue by default.
+# Option A: Build GRUB from source
+curl -LO https://ftp.gnu.org/gnu/grub/grub-2.12.tar.xz
+tar xf grub-2.12.tar.xz && cd grub-2.12
+./configure --target=i386 --prefix=/usr/local \
+    --disable-werror --disable-efiemu
+make -j$(sysctl -n hw.ncpu)
+sudo make install
+cd ..
+
+# Option B: Use a pre-built GRUB (community taps)
+# brew install --cask grub  (check availability)
+
+# 4. Build the cross-compiler
+export PREFIX="/usr/local/opt/cross"
+export TARGET="i686-elf"
+export PATH="$PREFIX/bin:$PATH"
+sudo mkdir -p $PREFIX
+
+mkdir -p /tmp/cross-build && cd /tmp/cross-build
+
+# binutils
+curl -LO https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+    --with-sysroot --disable-nls --disable-werror
+make -j$(sysctl -n hw.ncpu)
+sudo make install
+cd ..
+
+# GCC
+curl -LO https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
+tar xf gcc-13.2.0.tar.xz
+mkdir build-gcc && cd build-gcc
+../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+    --disable-nls --enable-languages=c --without-headers \
+    --with-gmp=$(brew --prefix gmp) \
+    --with-mpfr=$(brew --prefix mpfr) \
+    --with-mpc=$(brew --prefix libmpc)
+make -j$(sysctl -n hw.ncpu) all-gcc all-target-libgcc
+sudo make install-gcc install-target-libgcc
+cd /tmp && rm -rf cross-build
+
+# 5. Add to PATH (add to ~/.zshrc for persistence)
+echo 'export PATH="/usr/local/opt/cross/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+
+# 6. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make run
+```
+
+> **Note for Apple Silicon (M1/M2/M3/M4):** The cross-compiler produces i686-elf binaries regardless of your host CPU. QEMU handles the x86 emulation transparently. Build times may be slightly longer due to Rosetta or native ARM compilation of the cross-tools, but the resulting AstraOS binary is identical.
+
+---
+
+### Windows
+
+There are three approaches for building on Windows, listed from easiest to most involved:
+
+#### Option A: WSL2 (Recommended)
+
+Windows Subsystem for Linux gives you a full Linux environment. This is the easiest path.
+
+```powershell
+# 1. Install WSL2 (run in PowerShell as Administrator)
+wsl --install -d Ubuntu
+
+# 2. Restart your computer, then open "Ubuntu" from the Start menu
+
+# 3. Inside WSL2, follow the Ubuntu/Debian instructions above exactly.
+#    Everything works identically to native Linux.
+```
+
+To access the graphical QEMU window from WSL2:
+- **WSL2 on Windows 11:** GUI apps work out of the box via WSLg
+- **WSL2 on Windows 10:** Install an X server like VcXsrv or X410, then `export DISPLAY=:0`
+
+#### Option B: MSYS2
+
+```powershell
+# 1. Download and install MSYS2 from https://www.msys2.org/
+
+# 2. Open "MSYS2 UCRT64" terminal
+
+# 3. Install dependencies
+pacman -Syu
+pacman -S --needed base-devel mingw-w64-ucrt-x86_64-toolchain \
+    nasm xorriso grub mtools git curl \
+    gmp-devel mpfr-devel mpc-devel texinfo
+
+# 4. Install QEMU for Windows
+# Download from https://www.qemu.org/download/#windows
+# Or: pacman -S mingw-w64-ucrt-x86_64-qemu
+
+# 5. Build the cross-compiler (same steps as Linux, inside MSYS2)
+export PREFIX="/opt/cross"
+export TARGET="i686-elf"
+export PATH="$PREFIX/bin:$PATH"
+mkdir -p $PREFIX
+
+# ... (follow the binutils + GCC build steps from Ubuntu section)
+
+# 6. Clone, build, run
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+make run
+```
+
+#### Option C: Docker (Any Windows Version)
+
+```powershell
+# 1. Install Docker Desktop for Windows
+# https://www.docker.com/products/docker-desktop/
+
+# 2. Pull a Linux image and build inside it
+docker run -it --rm -v ${PWD}:/work ubuntu:24.04 bash
+
+# Inside the container, follow the Ubuntu instructions:
+apt update && apt install -y build-essential nasm xorriso grub-pc-bin \
+    grub-common mtools qemu-system-x86 git curl bison flex \
+    libgmp-dev libmpc-dev libmpfr-dev texinfo
+# ... (build cross-compiler, clone repo, make iso)
+
+# 3. Copy the ISO out and run in QEMU on your host:
+# qemu-system-i386 -cdrom build/astraos.iso -m 256M -vga std
+```
+
+---
+
+### FreeBSD
+
+```bash
+# 1. Install dependencies
+sudo pkg install nasm xorriso grub2-bhyve mtools qemu git curl \
+    gmake gmp mpfr mpc texinfo
+
+# 2. Build the cross-compiler
+# NOTE: Use gmake instead of make on FreeBSD
+export PREFIX="/usr/local/cross"
+export TARGET="i686-elf"
+export PATH="$PREFIX/bin:$PATH"
+sudo mkdir -p $PREFIX
+
+mkdir -p /tmp/cross-build && cd /tmp/cross-build
+curl -LO https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz
+curl -LO https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz
+
+tar xf binutils-2.41.tar.xz
+mkdir build-binutils && cd build-binutils
+../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+    --with-sysroot --disable-nls --disable-werror
+gmake -j$(sysctl -n hw.ncpu) && sudo gmake install && cd ..
+
+tar xf gcc-13.2.0.tar.xz
+mkdir build-gcc && cd build-gcc
+../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+    --disable-nls --enable-languages=c --without-headers
+gmake -j$(sysctl -n hw.ncpu) all-gcc all-target-libgcc
+sudo gmake install-gcc install-target-libgcc
+cd /tmp && rm -rf cross-build
+
+# 3. Clone and build (use gmake on FreeBSD)
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/usr/local/cross/bin:$PATH"
+gmake run
+```
+
+### OpenBSD
+
+```bash
+# 1. Install dependencies
+pkg_add nasm xorriso grub2 mtools qemu git curl gmake \
+    gmp mpfr libmpc texinfo bison
+
+# 2. Build cross-compiler (same as FreeBSD, use gmake)
+# ... (see FreeBSD section)
+
+# 3. Clone, build with gmake
+git clone https://github.com/D3LTA2033/AstraOS.git
+cd AstraOS
+export PATH="/usr/local/cross/bin:$PATH"
+gmake run
+```
+
+---
+
+### Docker (Any Platform)
+
+If you don't want to install anything on your host system, use Docker:
+
+```bash
+# Quick one-liner to build and get the ISO
+docker run --rm -v $(pwd)/output:/output ubuntu:24.04 bash -c '
+    apt update && apt install -y build-essential nasm xorriso grub-pc-bin \
+        grub-common mtools git curl bison flex libgmp-dev libmpc-dev \
+        libmpfr-dev texinfo &&
+    export PREFIX=/opt/cross TARGET=i686-elf PATH=/opt/cross/bin:$PATH &&
+    mkdir -p /opt/cross /tmp/build && cd /tmp/build &&
+    curl -sL https://ftp.gnu.org/gnu/binutils/binutils-2.41.tar.xz | tar xJ &&
+    mkdir bb && cd bb &&
+    ../binutils-2.41/configure --target=$TARGET --prefix=$PREFIX \
+        --with-sysroot --disable-nls --disable-werror &&
+    make -j$(nproc) && make install && cd .. &&
+    curl -sL https://ftp.gnu.org/gnu/gcc/gcc-13.2.0/gcc-13.2.0.tar.xz | tar xJ &&
+    mkdir bg && cd bg &&
+    ../gcc-13.2.0/configure --target=$TARGET --prefix=$PREFIX \
+        --disable-nls --enable-languages=c --without-headers &&
+    make -j$(nproc) all-gcc all-target-libgcc &&
+    make install-gcc install-target-libgcc && cd / &&
+    git clone https://github.com/D3LTA2033/AstraOS.git && cd AstraOS &&
+    make iso && cp build/astraos.iso /output/
+'
+
+# Run the ISO with your local QEMU
+qemu-system-i386 -cdrom output/astraos.iso -m 256M -vga std
+```
+
+---
+
+### Running on Real Hardware
+
+AstraOS can boot on any BIOS-compatible x86 machine:
+
+```bash
+# 1. Build the ISO
+make iso
+
+# 2. Write to a USB drive (replace /dev/sdX with your USB device)
+# WARNING: This will ERASE the USB drive!
+sudo dd if=build/astraos.iso of=/dev/sdX bs=4M status=progress
+sync
+
+# 3. Boot from USB
+# - Insert the USB drive
+# - Enter BIOS/boot menu (usually F2, F12, DEL, or ESC at startup)
+# - Select the USB drive as boot device
+# - AstraOS will boot into the installer wizard
+```
+
+**Hardware requirements:**
+- Any x86 CPU (Pentium or newer — integer-only graphics, no FPU/SSE required)
+- 32MB+ RAM (256MB recommended)
+- BIOS boot support (not UEFI-only machines; most PCs support Legacy/CSM mode)
+- VESA-compatible graphics (virtually all GPUs since 1998)
+- PS/2 keyboard and mouse (or USB with BIOS PS/2 emulation, which most BIOSes provide)
+
+**Tested environments:** QEMU, VirtualBox, VMware Workstation, Bochs, and bare-metal Lenovo ThinkPad / Dell OptiPlex / HP ProDesk systems.
+
+---
+
+### Verifying Your Installation
+
+After building, verify everything works:
+
+```bash
+# Check cross-compiler
+i686-elf-gcc --version          # Should show i686-elf target
+i686-elf-ld --version           # Should show i686-elf target
+
+# Check tools
+nasm --version
+grub-mkrescue --version
+qemu-system-i386 --version
+
+# Build and run
+cd AstraOS
+make clean && make iso          # Should produce build/astraos.iso (~4MB)
+make run                        # Should boot into the installer wizard
+
+# The first-boot installer wizard runs automatically:
+#   - Press Enter to advance through each step
+#   - Use arrow keys or mouse to select a theme
+#   - After installation, the desktop launches with all 4 applications
+#   - The VS Code-like editor, terminal, file manager, and settings app
+#     will appear on the glassmorphism desktop
+```
+
+### Build Commands Reference
 
 ```bash
 export PATH="/opt/cross/bin:$PATH"
 
-make            # Build kernel ELF
-make iso        # Build bootable GRUB ISO
+make            # Build kernel ELF binary (build/astra.kernel)
+make iso        # Build bootable GRUB ISO (build/astraos.iso)
 make run        # Build + boot in QEMU (graphical, serial on stdio)
+make run-nographic  # Build + boot headless (serial output only)
 make clean      # Remove all build artifacts
 ```
 
-### Running
+### Troubleshooting
 
-```bash
-# Standard boot — graphical desktop (1024x768x32bpp)
-make run
-
-# Headless boot — serial output only
-make run-nographic
-
-# The first-boot installer wizard will run automatically.
-# Navigate with Enter, arrow keys, and mouse clicks.
-# After installation, the desktop launches with all 4 applications.
-```
-
-QEMU is configured with 256MB RAM, CD-ROM boot, and VGA standard output. The desktop initializes a 1024x768 VESA framebuffer with double buffering.
+| Problem | Solution |
+|---------|----------|
+| `i686-elf-gcc: command not found` | Add cross-compiler to PATH: `export PATH="/opt/cross/bin:$PATH"` |
+| `grub-mkrescue: command not found` | Install GRUB tools: `apt install grub-pc-bin grub-common` (Debian) or `pacman -S grub` (Arch) |
+| `xorriso: command not found` | Install xorriso: `apt install xorriso` / `brew install xorriso` |
+| `make: *** No rule to make target` | Ensure you're in the AstraOS root directory |
+| QEMU window is black | Wait 5-8 seconds for the installer to render; press Enter if stuck |
+| QEMU: "No bootable device" | Ensure `make iso` completed successfully and the ISO path is correct |
+| Cross-compiler build fails on macOS | Pass Homebrew lib paths: `--with-gmp=$(brew --prefix gmp)` etc. |
+| WSL2: no QEMU window | Windows 11: works via WSLg. Windows 10: install VcXsrv and set `DISPLAY=:0` |
+| FreeBSD/OpenBSD: `make` errors | Use `gmake` (GNU Make) instead of BSD `make` |
 
 ---
 
