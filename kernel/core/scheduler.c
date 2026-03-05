@@ -20,6 +20,8 @@
 #include <kernel/idt.h>
 #include <kernel/gdt.h>
 #include <kernel/pic.h>
+#include <kernel/vmm.h>
+#include <kernel/capability.h>
 #include <kernel/kheap.h>
 #include <kernel/kstring.h>
 #include <drivers/vga.h>
@@ -132,6 +134,18 @@ void schedule(void)
 
     tss_set_kernel_stack(next->stack_top);
 
+    /* Switch address space if the new task has a different page directory */
+    uint32_t new_cr3 = next->page_dir_phys;
+    if (!new_cr3)
+        new_cr3 = vmm_get_kernel_directory_phys();
+
+    uint32_t old_cr3 = prev->page_dir_phys;
+    if (!old_cr3)
+        old_cr3 = vmm_get_kernel_directory_phys();
+
+    if (new_cr3 != old_cr3)
+        vmm_switch_directory(new_cr3);
+
     context_switch(&prev->context.esp, next->context.esp);
 }
 
@@ -196,10 +210,13 @@ uint32_t task_create(task_entry_t entry)
     }
     kmemset(stack, 0, TASK_STACK_SIZE);
 
-    task->id         = next_task_id++;
-    task->state      = TASK_READY;
-    task->stack_base = (uint32_t)stack;
-    task->stack_top  = (uint32_t)stack + TASK_STACK_SIZE;
+    task->id           = next_task_id++;
+    task->state        = TASK_READY;
+    task->stack_base   = (uint32_t)stack;
+    task->stack_top    = (uint32_t)stack + TASK_STACK_SIZE;
+    task->capabilities = CAP_ALL;  /* Kernel tasks get full capabilities */
+    task->page_dir     = NULL;     /* Kernel tasks use kernel directory */
+    task->page_dir_phys = 0;
 
     /* Set up stack to match what context_switch expects to pop.
      *
@@ -229,10 +246,34 @@ uint32_t task_create(task_entry_t entry)
     return task->id;
 }
 
+task_t *task_find(uint32_t tid)
+{
+    if (!task_list_head) return NULL;
+    task_t *t = task_list_head;
+    do {
+        if (t->id == tid) return t;
+        t = t->next;
+    } while (t != task_list_head);
+    return NULL;
+}
+
 void task_exit(void)
 {
     if (current_task) {
         current_task->state = TASK_DEAD;
+
+        /* Wake any task waiting on us */
+        task_t *t = task_list_head;
+        if (t) {
+            do {
+                if (t->state == TASK_BLOCKED && t->wait_for == current_task->id) {
+                    t->wait_for = 0;
+                    t->state = TASK_READY;
+                }
+                t = t->next;
+            } while (t != task_list_head);
+        }
+
         schedule();
     }
     while (1) __asm__ volatile ("hlt");
@@ -244,10 +285,13 @@ void scheduler_init(void)
     task_t *main_task = (task_t *)kmalloc(sizeof(task_t));
     kmemset(main_task, 0, sizeof(task_t));
 
-    main_task->id         = next_task_id++;
-    main_task->state      = TASK_RUNNING;
-    main_task->stack_base = 0;
-    main_task->stack_top  = 0;
+    main_task->id           = next_task_id++;
+    main_task->state        = TASK_RUNNING;
+    main_task->stack_base   = 0;
+    main_task->stack_top    = 0;
+    main_task->capabilities = CAP_ALL;
+    main_task->page_dir     = NULL;
+    main_task->page_dir_phys = 0;
 
     current_task = main_task;
     task_list_add(main_task);

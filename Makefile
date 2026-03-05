@@ -60,9 +60,25 @@ C_SRCS     := $(KERNEL_DIR)/core/kernel.c \
               $(KERNEL_DIR)/core/scheduler.c \
               $(KERNEL_DIR)/core/syscall.c \
               $(KERNEL_DIR)/core/usermode.c \
+              $(KERNEL_DIR)/core/vfs.c \
+              $(KERNEL_DIR)/core/devfs.c \
+              $(KERNEL_DIR)/core/ramfs.c \
+              $(KERNEL_DIR)/core/capability.c \
+              $(KERNEL_DIR)/core/pipe.c \
+              $(KERNEL_DIR)/core/initramfs.c \
+              $(KERNEL_DIR)/core/signal.c \
+              $(KERNEL_DIR)/core/installer.c \
+              $(KERNEL_DIR)/core/gui.c \
+              $(KERNEL_DIR)/core/astracor.c \
+              $(KERNEL_DIR)/core/apps.c \
               $(KERNEL_DIR)/drivers/vga/vga.c \
               $(KERNEL_DIR)/drivers/pit/pit.c \
               $(KERNEL_DIR)/drivers/keyboard/keyboard.c \
+              $(KERNEL_DIR)/drivers/serial/serial.c \
+              $(KERNEL_DIR)/drivers/rtc/rtc.c \
+              $(KERNEL_DIR)/drivers/framebuffer/framebuffer.c \
+              $(KERNEL_DIR)/drivers/framebuffer/font8x16.c \
+              $(KERNEL_DIR)/drivers/mouse/mouse.c \
               $(KERNEL_DIR)/lib/kstring.c
 
 # --- Object files (placed in build/) ---
@@ -70,10 +86,11 @@ ASM_OBJS   := $(patsubst %.asm,$(BUILD_DIR)/%.o,$(ASM_SRCS))
 C_OBJS     := $(patsubst %.c,$(BUILD_DIR)/%.o,$(C_SRCS))
 
 # --- User-space programs ---
-USER_BIN   := $(BUILD_DIR)/user/test_user.bin
-USER_OBJ   := $(BUILD_DIR)/user/test_user_bin.o
+USER_PROGS := test_user hello fib
+USER_BINS  := $(patsubst %,$(BUILD_DIR)/user/%.bin,$(USER_PROGS))
+USER_OBJS  := $(patsubst %,$(BUILD_DIR)/user/%_bin.o,$(USER_PROGS))
 
-OBJS       := $(ASM_OBJS) $(C_OBJS) $(USER_OBJ)
+OBJS       := $(ASM_OBJS) $(C_OBJS) $(USER_OBJS)
 
 # --- Output ---
 KERNEL_BIN := $(BUILD_DIR)/astra.kernel
@@ -106,22 +123,24 @@ $(BUILD_DIR)/%.o: %.c
 	@$(CC) $(CFLAGS) -c $< -o $@
 
 # --- User-space build ---
-# Compile user program to ELF, then extract flat binary, then wrap as linkable object
-$(USER_BIN): $(USER_DIR)/test_user.c $(USER_DIR)/entry.asm $(USER_DIR)/user.ld
-	@mkdir -p $(dir $@)
-	@echo "[USR] Compiling user program..."
-	@$(AS) -f elf32 $(USER_DIR)/entry.asm -o $(BUILD_DIR)/user/entry.o
-	@$(CC) -std=c11 -ffreestanding -fno-builtin -nostdlib -Wall -Wextra -Werror \
-		-O2 -c $(USER_DIR)/test_user.c -o $(BUILD_DIR)/user/test_user.o
-	@$(LD) -T $(USER_DIR)/user.ld -nostdlib -o $(BUILD_DIR)/user/test_user.elf \
-		$(BUILD_DIR)/user/entry.o $(BUILD_DIR)/user/test_user.o
-	@$(OBJCOPY) -O binary $(BUILD_DIR)/user/test_user.elf $@
-	@echo "[USR] User binary: $@ ($$(stat -c%s $@) bytes)"
+# Compile each user program to ELF, then extract flat binary, then wrap as linkable object
+USER_CFLAGS := -std=c11 -ffreestanding -fno-builtin -nostdlib -Wall -Wextra -Werror \
+               -I$(USER_DIR) -O2
 
-# Embed the flat binary as a linkable .o with symbols
-$(USER_OBJ): $(USER_BIN)
-	@echo "[USR] Embedding user binary into kernel..."
-	@cd $(BUILD_DIR) && $(LD) -r -b binary -o $(CURDIR)/$@ user/test_user.bin
+$(BUILD_DIR)/user/%.bin: $(USER_DIR)/%.c $(USER_DIR)/entry.asm $(USER_DIR)/user.ld $(USER_DIR)/usyscall.h
+	@mkdir -p $(dir $@)
+	@echo "[USR] Compiling $*..."
+	@$(AS) -f elf32 $(USER_DIR)/entry.asm -o $(BUILD_DIR)/user/entry_$*.o
+	@$(CC) $(USER_CFLAGS) -c $< -o $(BUILD_DIR)/user/$*.o
+	@$(LD) -T $(USER_DIR)/user.ld -nostdlib -o $(BUILD_DIR)/user/$*.elf \
+		$(BUILD_DIR)/user/entry_$*.o $(BUILD_DIR)/user/$*.o
+	@$(OBJCOPY) -O binary $(BUILD_DIR)/user/$*.elf $@
+	@echo "[USR] $@ ($$(stat -c%s $@) bytes)"
+
+# Embed each flat binary as a linkable .o with symbols
+$(BUILD_DIR)/user/%_bin.o: $(BUILD_DIR)/user/%.bin
+	@echo "[USR] Embedding $*.bin into kernel..."
+	@cd $(BUILD_DIR) && $(LD) -r -b binary -o $(CURDIR)/$@ user/$*.bin
 
 # Build bootable ISO using GRUB
 iso: $(KERNEL_BIN)

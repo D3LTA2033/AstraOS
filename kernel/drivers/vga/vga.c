@@ -57,6 +57,13 @@ void vga_putchar(char c)
     if (c == '\n') {
         vga_col = 0;
         vga_row++;
+    } else if (c == '\b') {
+        if (vga_col > 0) {
+            vga_col--;
+            VGA_BUFFER[vga_row * VGA_WIDTH + vga_col] = vga_entry(' ', vga_attr);
+        }
+    } else if (c == '\f') {
+        vga_clear();
     } else if (c == '\r') {
         vga_col = 0;
     } else if (c == '\t') {

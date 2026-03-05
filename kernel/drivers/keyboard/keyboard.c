@@ -1,51 +1,141 @@
 /* ==========================================================================
  * AstraOS - PS/2 Keyboard Driver
  * ==========================================================================
- * Handles IRQ1 (keyboard interrupt). Reads scan codes from port 0x60
- * and translates them to ASCII using a US QWERTY scancode set 1 table.
- * Key releases (bit 7 set) are ignored for now.
+ * Handles IRQ1. Reads scan codes from port 0x60 and translates them to
+ * ASCII using US QWERTY scancode set 1. Characters are placed in a ring
+ * buffer for consumption by the console line discipline.
+ *
+ * Phase 8: Added ring buffer, shift/capslock support, backspace handling.
+ * The driver no longer echoes to VGA directly — that is the console's job.
  * ========================================================================== */
 
 #include <drivers/keyboard.h>
-#include <drivers/vga.h>
 #include <kernel/idt.h>
 #include <kernel/pic.h>
 #include <io.h>
 
-#define KB_DATA_PORT 0x60
+#define KB_DATA_PORT    0x60
+#define KB_BUF_SIZE     256
 
-/* US QWERTY scancode set 1 -> ASCII (lowercase only, index = scancode) */
-static const char scancode_to_ascii[128] = {
-    0,   27, '1', '2', '3', '4', '5', '6', '7', '8',  /* 0x00-0x09 */
-    '9', '0', '-', '=', '\b','\t', 'q', 'w', 'e', 'r', /* 0x0A-0x13 */
-    't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0,   /* 0x14-0x1D (0x1D = LCtrl) */
-    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',  /* 0x1E-0x27 */
-    '\'','`',  0,  '\\','z', 'x', 'c', 'v', 'b', 'n',   /* 0x28-0x31 */
-    'm', ',', '.', '/',  0,  '*',  0,  ' ',  0,   0,     /* 0x32-0x3B */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x3C-0x45 (F1-F10) */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x46-0x4F */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x50-0x59 */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x5A-0x63 */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x64-0x6D */
-    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,      /* 0x6E-0x77 */
-    0,   0,   0,   0,   0,   0,   0,   0                  /* 0x78-0x7F */
+/* Ring buffer */
+static volatile char     kb_buffer[KB_BUF_SIZE];
+static volatile uint32_t kb_write = 0;
+static volatile uint32_t kb_read  = 0;
+
+/* Modifier state */
+static bool shift_held = false;
+static bool caps_on    = false;
+
+/* Scancode set 1 -> ASCII (unshifted) */
+static const char sc_normal[128] = {
+    0,   27, '1', '2', '3', '4', '5', '6', '7', '8',
+    '9', '0', '-', '=', '\b','\t', 'q', 'w', 'e', 'r',
+    't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', 0,
+    'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';',
+    '\'','`',  0, '\\', 'z', 'x', 'c', 'v', 'b', 'n',
+    'm', ',', '.', '/',  0,  '*',  0,  ' ',  0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0
 };
+
+/* Scancode set 1 -> ASCII (shifted) */
+static const char sc_shift[128] = {
+    0,   27, '!', '@', '#', '$', '%', '^', '&', '*',
+    '(', ')', '_', '+', '\b','\t', 'Q', 'W', 'E', 'R',
+    'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n', 0,
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':',
+    '"', '~',  0,  '|', 'Z', 'X', 'C', 'V', 'B', 'N',
+    'M', '<', '>', '?',  0,  '*',  0,  ' ',  0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0,   0,   0,
+    0,   0,   0,   0,   0,   0,   0,   0
+};
+
+static void kb_buf_put(char c)
+{
+    uint32_t next = (kb_write + 1) % KB_BUF_SIZE;
+    if (next != kb_read) {
+        kb_buffer[kb_write] = c;
+        kb_write = next;
+    }
+}
+
+int keyboard_getchar(void)
+{
+    if (kb_read == kb_write)
+        return -1;
+    char c = kb_buffer[kb_read];
+    kb_read = (kb_read + 1) % KB_BUF_SIZE;
+    return (int)(unsigned char)c;
+}
+
+int keyboard_has_data(void)
+{
+    return kb_read != kb_write;
+}
 
 static void keyboard_callback(registers_t *regs)
 {
     (void)regs;
     uint8_t scancode = inb(KB_DATA_PORT);
 
-    /* Ignore key releases (bit 7 set) */
+    /* Left/Right Shift press/release */
+    if (scancode == 0x2A || scancode == 0x36) {
+        shift_held = true;
+        pic_send_eoi(1);
+        return;
+    }
+    if (scancode == 0xAA || scancode == 0xB6) {
+        shift_held = false;
+        pic_send_eoi(1);
+        return;
+    }
+
+    /* Caps Lock toggle */
+    if (scancode == 0x3A) {
+        caps_on = !caps_on;
+        pic_send_eoi(1);
+        return;
+    }
+
+    /* Ignore key releases */
     if (scancode & 0x80) {
         pic_send_eoi(1);
         return;
     }
 
-    char c = scancode_to_ascii[scancode];
-    if (c) {
-        vga_putchar(c);
+    /* Ignore extended prefix */
+    if (scancode == 0xE0) {
+        pic_send_eoi(1);
+        return;
     }
+
+    /* Translate scancode to ASCII */
+    char c;
+    if (shift_held)
+        c = sc_shift[scancode & 0x7F];
+    else
+        c = sc_normal[scancode & 0x7F];
+
+    /* Apply caps lock to letters */
+    if (caps_on) {
+        if (c >= 'a' && c <= 'z')
+            c -= 32;
+        else if (c >= 'A' && c <= 'Z')
+            c += 32;
+    }
+
+    if (c)
+        kb_buf_put(c);
 
     pic_send_eoi(1);
 }

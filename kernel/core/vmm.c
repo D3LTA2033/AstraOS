@@ -15,6 +15,7 @@
 
 #include <kernel/vmm.h>
 #include <kernel/pmm.h>
+#include <kernel/kheap.h>
 #include <kernel/kstring.h>
 #include <drivers/vga.h>
 
@@ -192,4 +193,109 @@ void vmm_init(void)
     vga_write(" (");
     print_dec(KHEAP_INITIAL / 1024);
     vga_write(" KB)\n");
+}
+
+/* --- Per-task address space management (Phase 7) --- */
+
+/* Boundary between user-space and kernel-space PD indices.
+ * PD index 0..IDENTITY_MAP_TABLES-1: identity map (kernel)
+ * PD index 1..767: user space (4MB .. 3GB-1)
+ * PD index 768..1023: kernel heap + high mappings */
+#define USER_PD_START   1
+#define USER_PD_END     768     /* Exclusive: first kernel-heap PD index */
+
+page_directory_t *vmm_create_user_directory(uint32_t *out_phys)
+{
+    /* Allocate a page-aligned page directory.
+     * The hardware reads entries[] (4KB) via physical address in CR3.
+     * We over-allocate to guarantee page alignment. */
+    size_t alloc_size = sizeof(page_directory_t) + PAGE_SIZE;
+    void *raw = kmalloc(alloc_size);
+    if (!raw)
+        return NULL;
+
+    uint32_t aligned = ((uint32_t)raw + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    page_directory_t *dir = (page_directory_t *)aligned;
+    kmemset(dir, 0, sizeof(page_directory_t));
+
+    /* Store the raw pointer so we can free it later.
+     * We'll stash it in the last table slot (index 1023) which maps
+     * 0xFFC00000-0xFFFFFFFF — a region we don't use. */
+    dir->tables[PAGE_ENTRIES - 1] = (page_table_t *)raw;
+
+    /* Clone kernel-space mappings:
+     *   - Identity map tables (indices 0..IDENTITY_MAP_TABLES-1)
+     *   - Kernel heap tables (indices 768+) */
+    for (uint32_t i = 0; i < IDENTITY_MAP_TABLES; i++) {
+        dir->entries[i] = kernel_directory.entries[i];
+        dir->tables[i]  = kernel_directory.tables[i];
+    }
+    for (uint32_t i = USER_PD_END; i < PAGE_ENTRIES - 1; i++) {
+        if (kernel_directory.entries[i] & PAGE_PRESENT) {
+            dir->entries[i] = kernel_directory.entries[i];
+            dir->tables[i]  = kernel_directory.tables[i];
+        }
+    }
+
+    /* Compute physical address for CR3 */
+    uint32_t phys = vmm_get_physical(&kernel_directory, aligned);
+    if (!phys) {
+        /* entries[] might span page boundary — try to get phys of first byte */
+        kfree(raw);
+        return NULL;
+    }
+    *out_phys = phys;
+
+    return dir;
+}
+
+void vmm_destroy_user_directory(page_directory_t *dir)
+{
+    if (!dir)
+        return;
+
+    /* Free user-space page tables and their mapped frames */
+    for (uint32_t pdi = USER_PD_START; pdi < USER_PD_END; pdi++) {
+        if (!(dir->entries[pdi] & PAGE_PRESENT))
+            continue;
+
+        page_table_t *table = dir->tables[pdi];
+        if (!table)
+            continue;
+
+        /* Free all present frames in this table */
+        for (uint32_t pti = 0; pti < PAGE_ENTRIES; pti++) {
+            if (table->entries[pti] & PAGE_PRESENT) {
+                uint32_t frame = table->entries[pti] & 0xFFFFF000;
+                pmm_free_frame(frame);
+            }
+        }
+
+        /* Free the page table frame itself */
+        pmm_free_frame((uint32_t)table);
+    }
+
+    /* Recover the raw kmalloc pointer and free it */
+    void *raw = (void *)dir->tables[PAGE_ENTRIES - 1];
+    if (raw)
+        kfree(raw);
+}
+
+void vmm_switch_directory(uint32_t phys_addr)
+{
+    paging_load_directory(phys_addr);
+}
+
+uint32_t vmm_get_kernel_directory_phys(void)
+{
+    return (uint32_t)&kernel_directory;
+}
+
+void vmm_identity_map(uint32_t phys_addr)
+{
+    uint32_t page = phys_addr & 0xFFFFF000;
+    /* Check if already mapped */
+    if (vmm_get_physical(&kernel_directory, page))
+        return;
+    vmm_map_page(&kernel_directory, page, page, PAGE_KERNEL);
 }

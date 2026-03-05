@@ -20,14 +20,25 @@
 /* Syscall interrupt vector */
 #define SYSCALL_VECTOR  0x80
 
-/* Syscall numbers */
+/* Syscall numbers — these must remain stable once published */
 #define SYS_EXIT        0
 #define SYS_WRITE       1
 #define SYS_GETPID      2
 #define SYS_YIELD       3
 #define SYS_SLEEP       4
+#define SYS_OPEN        5
+#define SYS_READ        6
+#define SYS_CLOSE       7
+#define SYS_STAT        8
+#define SYS_READDIR     9
+#define SYS_SPAWN       10
+#define SYS_WAITPID     11
+#define SYS_PIPE        12
+#define SYS_KILL        13
+#define SYS_GETPPID     14
+#define SYS_REBOOT      15
 
-#define SYSCALL_COUNT   5
+#define SYSCALL_COUNT   16
 
 /* Syscall handler signature: args from registers, return value in EAX */
 typedef uint32_t (*syscall_fn_t)(uint32_t ebx, uint32_t ecx, uint32_t edx,

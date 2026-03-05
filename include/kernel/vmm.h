@@ -74,6 +74,24 @@ uint32_t vmm_get_physical(page_directory_t *dir, uint32_t virt);
 /* Get the current kernel page directory */
 page_directory_t *vmm_get_kernel_directory(void);
 
+/* Create a new user-space page directory with kernel mappings cloned.
+ * Returns the directory pointer (kernel-accessible) and sets *out_phys
+ * to the physical address for CR3. Returns NULL on failure. */
+page_directory_t *vmm_create_user_directory(uint32_t *out_phys);
+
+/* Destroy a user page directory: free user-space page tables and frames,
+ * then free the directory structure itself. Does NOT free kernel mappings. */
+void vmm_destroy_user_directory(page_directory_t *dir);
+
+/* Switch the active page directory (loads CR3) */
+void vmm_switch_directory(uint32_t phys_addr);
+
+/* Get the physical address of the kernel page directory */
+uint32_t vmm_get_kernel_directory_phys(void);
+
+/* Identity-map a physical address in the kernel page directory */
+void vmm_identity_map(uint32_t phys_addr);
+
 /* Assembly helpers */
 extern void paging_load_directory(uint32_t phys_addr);
 extern void paging_enable(void);

@@ -39,4 +39,5 @@ Phase 2: Memory + Interrupts — complete
 Phase 3: Paging + Heap — complete
 Phase 4: Tasking + Scheduler — complete
 Phase 5: User Mode + Syscalls — complete
-Next: Phase 6 — Filesystem + Driver Model
+Phase 6: Filesystem + Driver Model — complete
+Phase 7: Security Core — complete

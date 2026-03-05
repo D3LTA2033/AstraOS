@@ -1,8 +1,8 @@
 /* ==========================================================================
  * AstraOS - PS/2 Keyboard Driver
  * ==========================================================================
- * Basic scancode set 1 keyboard driver. Reads from port 0x60 on IRQ1.
- * Translates scan codes to ASCII for printable keys.
+ * Scancode set 1 keyboard driver with ring buffer. Characters are buffered
+ * by the IRQ handler and consumed by keyboard_getchar().
  * ========================================================================== */
 
 #ifndef _ASTRA_DRIVERS_KEYBOARD_H
@@ -12,5 +12,11 @@
 
 /* Initialize keyboard driver and register IRQ1 handler */
 void keyboard_init(void);
+
+/* Get next character from keyboard buffer. Returns -1 if empty. */
+int keyboard_getchar(void);
+
+/* Check if keyboard data is available */
+int keyboard_has_data(void);
 
 #endif /* _ASTRA_DRIVERS_KEYBOARD_H */
