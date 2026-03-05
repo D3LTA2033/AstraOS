@@ -101,7 +101,7 @@ typedef struct ac_value {
 } ac_value_t;
 
 /* Environment (variable scope) */
-#define AC_ENV_MAX 64
+#define AC_ENV_MAX 128
 typedef struct ac_env {
     char        *names[AC_ENV_MAX];
     ac_value_t   values[AC_ENV_MAX];

@@ -60,6 +60,7 @@ static token_type_t check_keyword(const char *s, int len)
         for (int i = 0; i < 8; i++) if (s[i] != kw[i]) { match = false; break; }
         if (match) return TOK_CONTINUE;
     }
+    if (len == 6 && s[0] == 'i' && s[1] == 'm' && s[2] == 'p' && s[3] == 'o' && s[4] == 'r' && s[5] == 't') return TOK_IMPORT;
     return TOK_IDENT;
 }
 
@@ -529,6 +530,58 @@ static ac_value_t parse_expr(ac_interp_t *ctx, ac_env_t *env)
     return parse_logic(ctx, env);
 }
 
+/* --- Module system (must be before parse_stmt) --- */
+
+static const char mod_math_src[] =
+    "# math module\n"
+    "let PI = 3141\n"
+    "let E = 2718\n"
+    "fn square(x) { return x * x }\n"
+    "fn cube(x) { return x * x * x }\n"
+    "fn factorial(n) { if n <= 1 { return 1 } return n * factorial(n - 1) }\n"
+    "fn gcd(a, b) { while b != 0 { let t = b\n b = a % b\n a = t } return a }\n"
+    "fn lcm(a, b) { return a * b / gcd(a, b) }\n"
+    "fn is_even(n) { return n % 2 == 0 }\n"
+    "fn is_odd(n) { return n % 2 != 0 }\n"
+    "fn sum_range(n) { let s = 0\n for i in range(n) { s += i } return s }\n";
+
+static const char mod_string_src[] =
+    "# string module\n"
+    "fn repeat(s, n) { let r = \"\"\n for i in range(n) { r = r + s } return r }\n"
+    "fn reverse(s) { let r = \"\"\n let i = len(s) - 1\n while i >= 0 { r = r + char_at(s, i)\n i -= 1 } return r }\n"
+    "fn is_empty(s) { return len(s) == 0 }\n"
+    "fn pad_left(s, n, c) { while len(s) < n { s = c + s } return s }\n"
+    "fn pad_right(s, n, c) { while len(s) < n { s = s + c } return s }\n";
+
+static const char mod_array_src[] =
+    "# array module\n"
+    "fn map(arr, f) { let r = []\n for i in range(len(arr)) { push(r, f(get(arr, i))) } return r }\n"
+    "fn filter(arr, f) { let r = []\n for i in range(len(arr)) { let v = get(arr, i)\n if f(v) { push(r, v) } } return r }\n"
+    "fn reduce(arr, f, init) { let acc = init\n for i in range(len(arr)) { acc = f(acc, get(arr, i)) } return acc }\n"
+    "fn foreach(arr, f) { for i in range(len(arr)) { f(get(arr, i)) } }\n"
+    "fn find(arr, val) { for i in range(len(arr)) { if get(arr, i) == val { return i } } return -1 }\n"
+    "fn sum(arr) { let s = 0\n for i in range(len(arr)) { s += get(arr, i) } return s }\n";
+
+static const char mod_io_src[] =
+    "# io module - basic I/O helpers\n"
+    "fn println(s) { print(s) }\n"
+    "fn debug(label, val) { print(label + \": \" + str(val)) }\n"
+    "fn assert(cond, msg) { if !cond { print(\"ASSERT FAILED: \" + msg) } }\n"
+    "fn assert_eq(a, b, msg) { if a != b { print(\"ASSERT_EQ FAILED: \" + msg + \" (\" + str(a) + \" != \" + str(b) + \")\") } }\n";
+
+typedef struct {
+    const char *name;
+    const char *source;
+} ac_module_t;
+
+static const ac_module_t builtin_modules[] = {
+    { "math",   mod_math_src },
+    { "string", mod_string_src },
+    { "array",  mod_array_src },
+    { "io",     mod_io_src },
+};
+#define AC_MODULE_COUNT 4
+
 /* --- Statements --- */
 
 static void parse_stmt(ac_interp_t *ctx, ac_env_t *env);
@@ -773,6 +826,48 @@ static void parse_stmt(ac_interp_t *ctx, ac_env_t *env)
         return;
     }
 
+    /* import module */
+    if (ctx->current.type == TOK_IMPORT) {
+        next_token(ctx);
+        if (ctx->current.type != TOK_IDENT) { error(ctx, "expected module name"); return; }
+        const char *mod_name = ctx->current.start;
+        int mod_nlen = ctx->current.length;
+        next_token(ctx);
+
+        /* Find built-in module */
+        const char *mod_src = NULL;
+        for (int i = 0; i < AC_MODULE_COUNT; i++) {
+            if (ident_eq(mod_name, mod_nlen, builtin_modules[i].name)) {
+                mod_src = builtin_modules[i].source;
+                break;
+            }
+        }
+        if (!mod_src) { error(ctx, "unknown module"); return; }
+
+        /* Save parse state and execute module source */
+        const char *save_src = ctx->source;
+        int save_srclen = ctx->source_len;
+        const char *save_pos = ctx->pos;
+        token_t save_tok = ctx->current;
+        int save_line = ctx->line;
+
+        ctx->source = mod_src;
+        ctx->source_len = (int)kstrlen(mod_src);
+        ctx->pos = mod_src;
+        ctx->line = 1;
+        next_token(ctx);
+        while (ctx->current.type != TOK_EOF && !ctx->has_error)
+            parse_stmt(ctx, ctx->global_env);
+
+        /* Restore parse state */
+        ctx->source = save_src;
+        ctx->source_len = save_srclen;
+        ctx->pos = save_pos;
+        ctx->current = save_tok;
+        ctx->line = save_line;
+        return;
+    }
+
     /* break / continue */
     if (ctx->current.type == TOK_BREAK) { next_token(ctx); ctx->should_break = true; return; }
     if (ctx->current.type == TOK_CONTINUE) { next_token(ctx); ctx->should_continue = true; return; }
@@ -904,6 +999,340 @@ static ac_value_t builtin_abs(ac_env_t *env, ac_value_t *args, int argc)
     return val_int(0);
 }
 
+/* --- String methods --- */
+
+static ac_value_t builtin_substr(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING) return val_str("", 0);
+    int start = args[1].type == VAL_INT ? args[1].int_val : 0;
+    int slen = (int)kstrlen(args[0].str_val);
+    if (start < 0) start = 0;
+    if (start >= slen) return val_str("", 0);
+    int count = (argc >= 3 && args[2].type == VAL_INT) ? args[2].int_val : slen - start;
+    if (start + count > slen) count = slen - start;
+    if (count <= 0) return val_str("", 0);
+    return val_str(args[0].str_val + start, count);
+}
+
+static ac_value_t builtin_indexof(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING || args[1].type != VAL_STRING)
+        return val_int(-1);
+    const char *hay = args[0].str_val;
+    const char *needle = args[1].str_val;
+    int hlen = (int)kstrlen(hay);
+    int nlen = (int)kstrlen(needle);
+    if (nlen == 0) return val_int(0);
+    for (int i = 0; i <= hlen - nlen; i++) {
+        bool match = true;
+        for (int j = 0; j < nlen; j++)
+            if (hay[i+j] != needle[j]) { match = false; break; }
+        if (match) return val_int(i);
+    }
+    return val_int(-1);
+}
+
+static ac_value_t builtin_split(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING || args[1].type != VAL_STRING)
+        return val_null();
+    const char *s = args[0].str_val;
+    const char *delim = args[1].str_val;
+    int dlen = (int)kstrlen(delim);
+    if (dlen == 0) return val_null();
+
+    ac_array_t *arr = (ac_array_t *)kmalloc(sizeof(ac_array_t));
+    arr->count = 0; arr->capacity = 16;
+    arr->items = (ac_value_t *)kmalloc(sizeof(ac_value_t) * 16);
+
+    const char *start = s;
+    while (*s) {
+        bool found = true;
+        for (int i = 0; i < dlen; i++)
+            if (s[i] != delim[i]) { found = false; break; }
+        if (found && arr->count < arr->capacity) {
+            arr->items[arr->count++] = val_str(start, (int)(s - start));
+            s += dlen;
+            start = s;
+        } else {
+            s++;
+        }
+    }
+    if (arr->count < arr->capacity)
+        arr->items[arr->count++] = val_str(start, (int)(s - start));
+
+    ac_value_t v; v.type = VAL_ARRAY; v.arr_val = arr;
+    return v;
+}
+
+static ac_value_t builtin_join(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_ARRAY || args[1].type != VAL_STRING)
+        return val_str("", 0);
+    ac_array_t *arr = args[0].arr_val;
+    const char *sep = args[1].str_val;
+    int seplen = (int)kstrlen(sep);
+
+    char buf[1024];
+    int pos = 0;
+    for (int i = 0; i < arr->count && pos < 1000; i++) {
+        if (i > 0) { for (int j = 0; j < seplen && pos < 1000; j++) buf[pos++] = sep[j]; }
+        char tmp[256];
+        val_to_str(arr->items[i], tmp, 256);
+        int tl = (int)kstrlen(tmp);
+        for (int j = 0; j < tl && pos < 1000; j++) buf[pos++] = tmp[j];
+    }
+    buf[pos] = '\0';
+    return val_str(buf, pos);
+}
+
+static ac_value_t builtin_upper(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 1 || args[0].type != VAL_STRING) return val_str("", 0);
+    int slen = (int)kstrlen(args[0].str_val);
+    char *buf = (char *)kmalloc((uint32_t)(slen + 1));
+    for (int i = 0; i < slen; i++) {
+        buf[i] = (args[0].str_val[i] >= 'a' && args[0].str_val[i] <= 'z')
+                 ? (char)(args[0].str_val[i] - 32) : args[0].str_val[i];
+    }
+    buf[slen] = '\0';
+    ac_value_t v = val_str(buf, slen);
+    kfree(buf);
+    return v;
+}
+
+static ac_value_t builtin_lower(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 1 || args[0].type != VAL_STRING) return val_str("", 0);
+    int slen = (int)kstrlen(args[0].str_val);
+    char *buf = (char *)kmalloc((uint32_t)(slen + 1));
+    for (int i = 0; i < slen; i++) {
+        buf[i] = (args[0].str_val[i] >= 'A' && args[0].str_val[i] <= 'Z')
+                 ? (char)(args[0].str_val[i] + 32) : args[0].str_val[i];
+    }
+    buf[slen] = '\0';
+    ac_value_t v = val_str(buf, slen);
+    kfree(buf);
+    return v;
+}
+
+static ac_value_t builtin_trim(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 1 || args[0].type != VAL_STRING) return val_str("", 0);
+    const char *s = args[0].str_val;
+    int slen = (int)kstrlen(s);
+    int start = 0, end = slen;
+    while (start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r')) start++;
+    while (end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r')) end--;
+    return val_str(s + start, end - start);
+}
+
+static ac_value_t builtin_replace(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 3 || args[0].type != VAL_STRING || args[1].type != VAL_STRING || args[2].type != VAL_STRING)
+        return argc >= 1 ? args[0] : val_str("", 0);
+    const char *s = args[0].str_val;
+    const char *from = args[1].str_val;
+    const char *to = args[2].str_val;
+    int slen = (int)kstrlen(s);
+    int flen = (int)kstrlen(from);
+    int tlen = (int)kstrlen(to);
+    if (flen == 0) return args[0];
+
+    char buf[1024];
+    int pos = 0, i = 0;
+    while (i < slen && pos < 1000) {
+        bool found = true;
+        if (i + flen <= slen) {
+            for (int j = 0; j < flen; j++)
+                if (s[i+j] != from[j]) { found = false; break; }
+        } else found = false;
+        if (found) {
+            for (int j = 0; j < tlen && pos < 1000; j++) buf[pos++] = to[j];
+            i += flen;
+        } else {
+            buf[pos++] = s[i++];
+        }
+    }
+    buf[pos] = '\0';
+    return val_str(buf, pos);
+}
+
+static ac_value_t builtin_startswith(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING || args[1].type != VAL_STRING)
+        return val_bool(false);
+    const char *s = args[0].str_val;
+    const char *prefix = args[1].str_val;
+    int plen = (int)kstrlen(prefix);
+    for (int i = 0; i < plen; i++)
+        if (s[i] != prefix[i]) return val_bool(false);
+    return val_bool(true);
+}
+
+static ac_value_t builtin_endswith(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING || args[1].type != VAL_STRING)
+        return val_bool(false);
+    int slen = (int)kstrlen(args[0].str_val);
+    int plen = (int)kstrlen(args[1].str_val);
+    if (plen > slen) return val_bool(false);
+    for (int i = 0; i < plen; i++)
+        if (args[0].str_val[slen - plen + i] != args[1].str_val[i]) return val_bool(false);
+    return val_bool(true);
+}
+
+static ac_value_t builtin_char_at(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_STRING || args[1].type != VAL_INT)
+        return val_str("", 0);
+    int idx = args[1].int_val;
+    int slen = (int)kstrlen(args[0].str_val);
+    if (idx < 0 || idx >= slen) return val_str("", 0);
+    return val_str(args[0].str_val + idx, 1);
+}
+
+/* --- Math builtins --- */
+
+static ac_value_t builtin_min(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2) return val_int(0);
+    if (args[0].type == VAL_INT && args[1].type == VAL_INT)
+        return val_int(args[0].int_val < args[1].int_val ? args[0].int_val : args[1].int_val);
+    return val_int(0);
+}
+
+static ac_value_t builtin_max(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2) return val_int(0);
+    if (args[0].type == VAL_INT && args[1].type == VAL_INT)
+        return val_int(args[0].int_val > args[1].int_val ? args[0].int_val : args[1].int_val);
+    return val_int(0);
+}
+
+static ac_value_t builtin_clamp(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 3) return val_int(0);
+    if (args[0].type == VAL_INT && args[1].type == VAL_INT && args[2].type == VAL_INT) {
+        int v = args[0].int_val;
+        if (v < args[1].int_val) v = args[1].int_val;
+        if (v > args[2].int_val) v = args[2].int_val;
+        return val_int(v);
+    }
+    return val_int(0);
+}
+
+static ac_value_t builtin_pow(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_INT || args[1].type != VAL_INT)
+        return val_int(0);
+    int base = args[0].int_val;
+    int exp = args[1].int_val;
+    if (exp < 0) return val_int(0);
+    int result = 1;
+    for (int i = 0; i < exp; i++) result *= base;
+    return val_int(result);
+}
+
+/* --- Array builtins --- */
+
+static ac_value_t builtin_push(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_ARRAY) return val_null();
+    ac_array_t *arr = args[0].arr_val;
+    if (arr->count >= arr->capacity) {
+        int new_cap = arr->capacity * 2;
+        ac_value_t *new_items = (ac_value_t *)kmalloc(sizeof(ac_value_t) * (uint32_t)new_cap);
+        kmemcpy(new_items, arr->items, sizeof(ac_value_t) * (uint32_t)arr->count);
+        kfree(arr->items);
+        arr->items = new_items;
+        arr->capacity = new_cap;
+    }
+    arr->items[arr->count++] = args[1];
+    return val_int(arr->count);
+}
+
+static ac_value_t builtin_pop(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 1 || args[0].type != VAL_ARRAY) return val_null();
+    ac_array_t *arr = args[0].arr_val;
+    if (arr->count <= 0) return val_null();
+    return arr->items[--arr->count];
+}
+
+static ac_value_t builtin_get(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2 || args[0].type != VAL_ARRAY || args[1].type != VAL_INT)
+        return val_null();
+    int idx = args[1].int_val;
+    ac_array_t *arr = args[0].arr_val;
+    if (idx < 0 || idx >= arr->count) return val_null();
+    return arr->items[idx];
+}
+
+static ac_value_t builtin_set(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 3 || args[0].type != VAL_ARRAY || args[1].type != VAL_INT)
+        return val_null();
+    int idx = args[1].int_val;
+    ac_array_t *arr = args[0].arr_val;
+    if (idx < 0 || idx >= arr->count) return val_null();
+    arr->items[idx] = args[2];
+    return args[2];
+}
+
+static ac_value_t builtin_contains(ac_env_t *env, ac_value_t *args, int argc)
+{
+    (void)env;
+    if (argc < 2) return val_bool(false);
+    if (args[0].type == VAL_STRING && args[1].type == VAL_STRING) {
+        /* String contains */
+        const char *hay = args[0].str_val;
+        const char *needle = args[1].str_val;
+        int hlen = (int)kstrlen(hay);
+        int nlen = (int)kstrlen(needle);
+        for (int i = 0; i <= hlen - nlen; i++) {
+            bool m = true;
+            for (int j = 0; j < nlen; j++)
+                if (hay[i+j] != needle[j]) { m = false; break; }
+            if (m) return val_bool(true);
+        }
+        return val_bool(false);
+    }
+    if (args[0].type == VAL_ARRAY) {
+        ac_array_t *arr = args[0].arr_val;
+        for (int i = 0; i < arr->count; i++) {
+            if (arr->items[i].type == args[1].type) {
+                if (args[1].type == VAL_INT && arr->items[i].int_val == args[1].int_val)
+                    return val_bool(true);
+                if (args[1].type == VAL_STRING && kstrcmp(arr->items[i].str_val, args[1].str_val) == 0)
+                    return val_bool(true);
+            }
+        }
+        return val_bool(false);
+    }
+    return val_bool(false);
+}
+
 /* Global interpreter pointer for builtins */
 ac_interp_t *_ac_current = NULL;
 
@@ -926,6 +1355,32 @@ ac_interp_t *ac_create(void)
     fn.native_fn = builtin_type;   env_set(ctx->global_env, "type", 4, fn);
     fn.native_fn = builtin_range;  env_set(ctx->global_env, "range", 5, fn);
     fn.native_fn = builtin_abs;    env_set(ctx->global_env, "abs", 3, fn);
+
+    /* String builtins */
+    fn.native_fn = builtin_substr;    env_set(ctx->global_env, "substr", 6, fn);
+    fn.native_fn = builtin_indexof;   env_set(ctx->global_env, "indexof", 7, fn);
+    fn.native_fn = builtin_split;     env_set(ctx->global_env, "split", 5, fn);
+    fn.native_fn = builtin_join;      env_set(ctx->global_env, "join", 4, fn);
+    fn.native_fn = builtin_upper;     env_set(ctx->global_env, "upper", 5, fn);
+    fn.native_fn = builtin_lower;     env_set(ctx->global_env, "lower", 5, fn);
+    fn.native_fn = builtin_trim;      env_set(ctx->global_env, "trim", 4, fn);
+    fn.native_fn = builtin_replace;   env_set(ctx->global_env, "replace", 7, fn);
+    fn.native_fn = builtin_startswith; env_set(ctx->global_env, "startswith", 10, fn);
+    fn.native_fn = builtin_endswith;  env_set(ctx->global_env, "endswith", 8, fn);
+    fn.native_fn = builtin_char_at;   env_set(ctx->global_env, "char_at", 7, fn);
+    fn.native_fn = builtin_contains;  env_set(ctx->global_env, "contains", 8, fn);
+
+    /* Math builtins */
+    fn.native_fn = builtin_min;   env_set(ctx->global_env, "min", 3, fn);
+    fn.native_fn = builtin_max;   env_set(ctx->global_env, "max", 3, fn);
+    fn.native_fn = builtin_clamp; env_set(ctx->global_env, "clamp", 5, fn);
+    fn.native_fn = builtin_pow;   env_set(ctx->global_env, "pow", 3, fn);
+
+    /* Array builtins */
+    fn.native_fn = builtin_push;  env_set(ctx->global_env, "push", 4, fn);
+    fn.native_fn = builtin_pop;   env_set(ctx->global_env, "pop", 3, fn);
+    fn.native_fn = builtin_get;   env_set(ctx->global_env, "get", 3, fn);
+    fn.native_fn = builtin_set;   env_set(ctx->global_env, "set", 3, fn);
 
     return ctx;
 }

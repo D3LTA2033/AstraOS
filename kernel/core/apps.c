@@ -8,6 +8,7 @@
 #include <kernel/astracor.h>
 #include <kernel/kheap.h>
 #include <kernel/kstring.h>
+#include <kernel/vfs.h>
 #include <drivers/framebuffer.h>
 
 /* ========================================================================
@@ -200,8 +201,8 @@ static void editor_output(const char *text, void *data)
 
 static bool is_keyword(const char *word, int len)
 {
-    static const char *kws[] = {"fn","let","if","elif","else","while","for","in","return","true","false","null","break","continue"};
-    for (int i = 0; i < 14; i++) {
+    static const char *kws[] = {"fn","let","if","elif","else","while","for","in","return","true","false","null","break","continue","import"};
+    for (int i = 0; i < 15; i++) {
         int klen = (int)kstrlen(kws[i]);
         if (len == klen) {
             bool match = true;
@@ -214,8 +215,8 @@ static bool is_keyword(const char *word, int len)
 
 static bool is_builtin(const char *word, int len)
 {
-    static const char *bfs[] = {"print","len","str","int","type","range","abs"};
-    for (int i = 0; i < 7; i++) {
+    static const char *bfs[] = {"print","len","str","int","type","range","abs","substr","indexof","split","join","upper","lower","trim","replace","startswith","endswith","char_at","contains","min","max","clamp","pow","push","pop","get","set"};
+    for (int i = 0; i < 27; i++) {
         int blen = (int)kstrlen(bfs[i]);
         if (len == blen) {
             bool match = true;
@@ -555,5 +556,321 @@ int app_editor_create(int x, int y, int w, int h, const char *filename)
     gui_set_key_handler(wid, editor_key);
     gui_set_click_handler(wid, editor_click);
     gui_set_userdata(wid, ed);
+    return wid;
+}
+
+/* ========================================================================
+ * File Manager Application
+ * ======================================================================== */
+
+#define FM_PATH_MAX     256
+#define FM_ENTRY_H      24
+#define FM_TOOLBAR_H    30
+#define FM_PATHBAR_H    24
+#define FM_ICON_W       16
+
+typedef struct {
+    vfs_node_t *current_dir;
+    char        path[FM_PATH_MAX];
+    int         scroll;
+    int         selected;
+} filemgr_t;
+
+static bool fm_str_ends_with(const char *s, const char *suffix)
+{
+    int slen = (int)kstrlen(s);
+    int xlen = (int)kstrlen(suffix);
+    if (xlen > slen) return false;
+    for (int i = 0; i < xlen; i++) {
+        if (s[slen - xlen + i] != suffix[i]) return false;
+    }
+    return true;
+}
+
+static void fm_navigate_path(filemgr_t *fm, vfs_node_t *dir, const char *parent_path)
+{
+    if (!dir || !(dir->type & VFS_DIRECTORY)) return;
+    fm->current_dir = dir;
+    fm->scroll = 0;
+    fm->selected = -1;
+
+    kmemset(fm->path, 0, FM_PATH_MAX);
+    int plen = (int)kstrlen(parent_path);
+
+    /* Copy parent path */
+    kstrncpy(fm->path, parent_path, FM_PATH_MAX - 1);
+
+    /* Append / if needed */
+    if (plen > 0 && fm->path[plen - 1] != '/') {
+        if (plen < FM_PATH_MAX - 1) {
+            fm->path[plen] = '/';
+            plen++;
+        }
+    }
+
+    /* Append dir name (unless root) */
+    if (dir != vfs_root() && plen < FM_PATH_MAX - 1) {
+        kstrncpy(fm->path + plen, dir->name, (size_t)(FM_PATH_MAX - plen - 1));
+    }
+}
+
+static void fm_draw_icon_folder(int x, int y)
+{
+    /* Simple folder icon: yellow rectangle with a tab */
+    fb_fill_rect(x, y + 4, 14, 10, COL_YELLOW);
+    fb_fill_rect(x, y + 2, 8, 4, COL_YELLOW);
+}
+
+static void fm_draw_icon_file(int x, int y)
+{
+    /* Simple file icon: white/light rectangle */
+    fb_fill_rect(x + 2, y + 2, 10, 13, COL_TEXT_DIM);
+    fb_fill_rect(x + 3, y + 3, 8, 11, COL_SURFACE);
+}
+
+static void fm_render(int win_id, int x, int y, int w, int h)
+{
+    gui_window_t *win = gui_get_window(win_id);
+    if (!win) return;
+    filemgr_t *fm = (filemgr_t *)win->userdata;
+    if (!fm || !fm->current_dir) return;
+
+    /* Background */
+    fb_fill_rect(x, y, w, h, COL_BG_DARK);
+
+    /* Toolbar area */
+    fb_fill_rect(x, y, w, FM_TOOLBAR_H, COL_SURFACE);
+    fb_rect(x, y + FM_TOOLBAR_H - 1, w, 1, COL_BORDER);
+
+    /* "New File" button */
+    fb_fill_rect(x + 4, y + 4, 72, 22, COL_ACCENT);
+    fb_puts(x + 10, y + 7, "New File", COL_BG_DARK, COL_ACCENT);
+
+    /* "Open" button */
+    fb_fill_rect(x + 82, y + 4, 52, 22, COL_BLUE);
+    fb_puts(x + 92, y + 7, "Open", COL_BG_DARK, COL_BLUE);
+
+    /* Path bar */
+    int path_y = y + FM_TOOLBAR_H;
+    fb_fill_rect(x, path_y, w, FM_PATHBAR_H, RGB(35, 35, 55));
+    fb_rect(x, path_y + FM_PATHBAR_H - 1, w, 1, COL_BORDER);
+    fb_puts(x + 8, path_y + 4, fm->path, COL_TEXT, RGB(35, 35, 55));
+
+    /* File listing area */
+    int list_y = path_y + FM_PATHBAR_H;
+    int list_h = h - FM_TOOLBAR_H - FM_PATHBAR_H;
+    int visible = list_h / FM_ENTRY_H;
+
+    vfs_node_t *dir = fm->current_dir;
+
+    /* ".." entry if not root */
+    int row = 0;
+    if (dir != vfs_root() && row >= fm->scroll && (row - fm->scroll) < visible) {
+        int ey = list_y + (row - fm->scroll) * FM_ENTRY_H;
+        if (fm->selected == row)
+            fb_fill_rect(x, ey, w, FM_ENTRY_H, RGB(50, 52, 78));
+        fm_draw_icon_folder(x + 8, ey + 2);
+        fb_puts(x + 8 + FM_ICON_W + 8, ey + 4, "..", COL_TEXT, COL_BG_DARK);
+    }
+    row++;
+
+    /* Directory children */
+    for (uint32_t i = 0; i < dir->child_count; i++) {
+        vfs_node_t *child = dir->children[i];
+        if (!child) continue;
+
+        if (row >= fm->scroll && (row - fm->scroll) < visible) {
+            int ey = list_y + (row - fm->scroll) * FM_ENTRY_H;
+
+            /* Highlight selected */
+            if (fm->selected == row)
+                fb_fill_rect(x, ey, w, FM_ENTRY_H, RGB(50, 52, 78));
+
+            /* Icon */
+            if (child->type & VFS_DIRECTORY)
+                fm_draw_icon_folder(x + 8, ey + 2);
+            else
+                fm_draw_icon_file(x + 8, ey + 2);
+
+            /* Name */
+            color_t name_col = (child->type & VFS_DIRECTORY) ? COL_YELLOW : COL_TEXT;
+            fb_puts(x + 8 + FM_ICON_W + 8, ey + 4,
+                    child->name, name_col, COL_BG_DARK);
+
+            /* Show type indicator for directories */
+            if (child->type & VFS_DIRECTORY) {
+                int nlen = (int)kstrlen(child->name);
+                fb_putchar(x + 8 + FM_ICON_W + 8 + nlen * FONT_W + 4,
+                           ey + 4, '/', COL_TEXT_DIM, COL_BG_DARK);
+            }
+        }
+        row++;
+    }
+}
+
+static void fm_click(int win_id, int mx, int my, int button)
+{
+    (void)button;
+    gui_window_t *win = gui_get_window(win_id);
+    if (!win) return;
+    filemgr_t *fm = (filemgr_t *)win->userdata;
+    if (!fm || !fm->current_dir) return;
+
+    /* Toolbar clicks */
+    if (my < FM_TOOLBAR_H) {
+        if (mx >= 4 && mx < 76 && my >= 4 && my < 26) {
+            /* "New File" button — create a new file in current dir */
+            vfs_node_t *nf = vfs_create_node("new_file.ac", VFS_FILE);
+            if (nf) vfs_add_child(fm->current_dir, nf);
+            gui_invalidate(win_id);
+            return;
+        }
+        if (mx >= 82 && mx < 134 && my >= 4 && my < 26) {
+            /* "Open" button — open selected item */
+            if (fm->selected >= 0) {
+                int idx = fm->selected;
+                vfs_node_t *dir = fm->current_dir;
+                int entry = 0;
+
+                /* Account for ".." entry */
+                if (dir != vfs_root()) {
+                    if (idx == 0) {
+                        /* Navigate up: look up parent via path */
+                        vfs_node_t *parent = vfs_root();
+                        /* Find parent by re-resolving path minus last component */
+                        char ppath[FM_PATH_MAX];
+                        kstrncpy(ppath, fm->path, FM_PATH_MAX - 1);
+                        int plen = (int)kstrlen(ppath);
+                        /* Remove trailing slash */
+                        if (plen > 1 && ppath[plen - 1] == '/')
+                            ppath[--plen] = '\0';
+                        /* Find last slash */
+                        int last = 0;
+                        for (int i = 0; i < plen; i++)
+                            if (ppath[i] == '/') last = i;
+                        if (last == 0)
+                            ppath[1] = '\0';
+                        else
+                            ppath[last] = '\0';
+                        vfs_node_t *resolved = vfs_lookup(ppath);
+                        if (resolved && (resolved->type & VFS_DIRECTORY))
+                            parent = resolved;
+                        fm_navigate_path(fm, parent, ppath);
+                        gui_invalidate(win_id);
+                        return;
+                    }
+                    idx--; /* Adjust for ".." entry */
+                    entry = 1;
+                }
+                (void)entry;
+
+                if ((uint32_t)idx < dir->child_count) {
+                    vfs_node_t *child = dir->children[idx];
+                    if (child && (child->type & VFS_DIRECTORY)) {
+                        fm_navigate_path(fm, child, fm->path);
+                    } else if (child && fm_str_ends_with(child->name, ".ac")) {
+                        /* Open .ac file in editor */
+                        app_editor_create(150, 80, 640, 480, child->name);
+                    }
+                }
+                gui_invalidate(win_id);
+                return;
+            }
+        }
+        return;
+    }
+
+    /* Path bar — ignore clicks */
+    if (my < FM_TOOLBAR_H + FM_PATHBAR_H) return;
+
+    /* File list area */
+    int list_y_off = my - FM_TOOLBAR_H - FM_PATHBAR_H;
+    int clicked_row = fm->scroll + list_y_off / FM_ENTRY_H;
+    vfs_node_t *dir = fm->current_dir;
+
+    /* Total entries: ".." (if not root) + child_count */
+    int total = (int)dir->child_count;
+    if (dir != vfs_root()) total++;
+
+    if (clicked_row >= 0 && clicked_row < total) {
+        if (fm->selected == clicked_row) {
+            /* Double-click simulation: second click on same item opens it */
+            int idx = clicked_row;
+            if (dir != vfs_root()) {
+                if (idx == 0) {
+                    /* Go up */
+                    vfs_node_t *parent = vfs_root();
+                    char ppath[FM_PATH_MAX];
+                    kstrncpy(ppath, fm->path, FM_PATH_MAX - 1);
+                    int plen = (int)kstrlen(ppath);
+                    if (plen > 1 && ppath[plen - 1] == '/')
+                        ppath[--plen] = '\0';
+                    int last = 0;
+                    for (int i = 0; i < plen; i++)
+                        if (ppath[i] == '/') last = i;
+                    if (last == 0)
+                        ppath[1] = '\0';
+                    else
+                        ppath[last] = '\0';
+                    vfs_node_t *resolved = vfs_lookup(ppath);
+                    if (resolved && (resolved->type & VFS_DIRECTORY))
+                        parent = resolved;
+                    fm_navigate_path(fm, parent, ppath);
+                    gui_invalidate(win_id);
+                    return;
+                }
+                idx--;
+            }
+            if ((uint32_t)idx < dir->child_count) {
+                vfs_node_t *child = dir->children[idx];
+                if (child && (child->type & VFS_DIRECTORY)) {
+                    fm_navigate_path(fm, child, fm->path);
+                } else if (child && fm_str_ends_with(child->name, ".ac")) {
+                    app_editor_create(150, 80, 640, 480, child->name);
+                }
+            }
+        } else {
+            fm->selected = clicked_row;
+        }
+    }
+    gui_invalidate(win_id);
+}
+
+static void fm_key(int win_id, int key)
+{
+    gui_window_t *win = gui_get_window(win_id);
+    if (!win) return;
+    filemgr_t *fm = (filemgr_t *)win->userdata;
+    if (!fm || !fm->current_dir) return;
+
+    vfs_node_t *dir = fm->current_dir;
+    int total = (int)dir->child_count;
+    if (dir != vfs_root()) total++;
+
+    /* Arrow key handling (scan codes mapped by GUI layer) */
+    if (key == 0x80) { /* Up */
+        if (fm->selected > 0) fm->selected--;
+    } else if (key == 0x81) { /* Down */
+        if (fm->selected < total - 1) fm->selected++;
+    }
+    gui_invalidate(win_id);
+}
+
+int app_filemgr_create(int x, int y, int w, int h)
+{
+    int wid = gui_create_window("File Manager", x, y, w, h, WIN_DEFAULT);
+    if (wid < 0) return -1;
+
+    filemgr_t *fm = (filemgr_t *)kmalloc(sizeof(filemgr_t));
+    kmemset(fm, 0, sizeof(filemgr_t));
+    fm->current_dir = vfs_root();
+    fm->selected = -1;
+    fm->path[0] = '/';
+    fm->path[1] = '\0';
+
+    gui_set_render(wid, fm_render);
+    gui_set_key_handler(wid, fm_key);
+    gui_set_click_handler(wid, fm_click);
+    gui_set_userdata(wid, fm);
     return wid;
 }
